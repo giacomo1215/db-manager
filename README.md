@@ -1,6 +1,6 @@
 # db-manager
 
-A standalone, multi-engine SQL editor — a Blazor Server port of the ZeatDashboard SQL Editor, without DevExpress. Connect to just about any database, save the connection, and go.
+A standalone, multi-engine SQL editor. Connect to just about any database, save the connection, and go.
 
 ## Engines
 
