@@ -1,0 +1,248 @@
+@* The vault gate: the first screen every session sees. Two states share one
+   composition — first run (create the master password) and every run after
+   (unlock). Its aesthetic (aurora field, glass panel, one brass accent) is
+   the app's identity, expressed at full intensity here; it follows the
+   light/dark theme like every other page. See Login.razor.css. *@
+@page "/login"
+@layout BlankLayout
+@inject IVaultService Vault
+@inject ISessionVault SessionVault
+@inject NavigationManager Navigation
+
+<PageTitle>Unlock — db-manager</PageTitle>
+
+<section class="login-root">
+    @* Ambient layers — decorative, hidden from a11y and frozen under
+       prefers-reduced-motion (see Login.razor.css). *@
+    <div class="aurora" aria-hidden="true">
+        <span class="blob blob-a"></span>
+        <span class="blob blob-b"></span>
+        <span class="blob blob-c"></span>
+    </div>
+    <div class="grid" aria-hidden="true"></div>
+
+    <div class="login-stage">
+        <div class="brand">
+            <div class="seal" aria-hidden="true">
+                <span class="seal-glow"></span>
+                <span class="seal-ring"></span>
+                <i class="bi bi-database-fill"></i>
+            </div>
+            <h1 class="brand-name">db-manager</h1>
+            <p class="brand-tag">Your databases, behind one key.</p>
+        </div>
+
+        <div class="panel @(_shake ? "panel-shake" : null)">
+            @if (!_vaultExists)
+            {
+                <h2 class="panel-title">Create the vault key</h2>
+                <p class="panel-text">
+                    Saved connection credentials are encrypted with this
+                    password (AES-256-GCM, PBKDF2 key derivation). It is never
+                    stored — if you forget it, the vault cannot be recovered.
+                </p>
+                <form @onsubmit="SubmitAsync" @onsubmit:preventDefault>
+                    <div class="field">
+                        <label class="field-label" for="pw-new">Master password</label>
+                        <div class="pw-wrap">
+                            <input id="pw-new" type="@PasswordInputType" class="key-input"
+                                   autocomplete="new-password" @bind="_password" />
+                            <button type="button" class="pw-toggle" title="Show or hide password"
+                                    aria-label="Show or hide password" @onclick="() => _showPassword = !_showPassword">
+                                <i class="bi @(_showPassword ? "bi-eye-slash" : "bi-eye")"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="field-label" for="pw-new2">Repeat password</label>
+                        <input id="pw-new2" type="@PasswordInputType" class="key-input"
+                               autocomplete="new-password" @bind="_password2" />
+                    </div>
+                    <button type="submit" class="btn-key" disabled="@_busy">
+                        @if (_busy)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                            <span>Deriving key…</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-key me-2" aria-hidden="true"></i><span>Create vault</span>
+                        }
+                    </button>
+                </form>
+            }
+            else
+            {
+                <h2 class="panel-title">Vault locked</h2>
+                <p class="panel-text">
+                    Enter the master password to decrypt your saved
+                    connections for this session.
+                </p>
+                <form @onsubmit="SubmitAsync" @onsubmit:preventDefault>
+                    <div class="field">
+                        <label class="field-label" for="pw-unlock">Master password</label>
+                        <div class="pw-wrap">
+                            <input id="pw-unlock" type="@PasswordInputType" class="key-input"
+                                   autocomplete="current-password" @bind="_password" />
+                            <button type="button" class="pw-toggle" title="Show or hide password"
+                                    aria-label="Show or hide password" @onclick="() => _showPassword = !_showPassword">
+                                <i class="bi @(_showPassword ? "bi-eye-slash" : "bi-eye")"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-key" disabled="@_busy">
+                        @if (_busy)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>
+                            <span>Deriving key…</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-unlock me-2" aria-hidden="true"></i><span>Unlock vault</span>
+                        }
+                    </button>
+                </form>
+            }
+
+            @if (_error is not null)
+            {
+                <div class="error-line" role="alert">
+                    <i class="bi bi-exclamation-triangle me-2" aria-hidden="true"></i>@_error
+                </div>
+            }
+        </div>
+
+        @* Backup & Restore works while locked: an encrypted backup's own
+           master password is what matters, so a forgotten current password
+           must not block restoring. Collapsed — it is the rare path. *@
+        @if (_vaultExists)
+        {
+            <button type="button" class="restore-toggle" @onclick="() => _showRestore = !_showRestore"
+                    aria-expanded="@_showRestore">
+                <i class="bi @(_showRestore ? "bi-chevron-down" : "bi-chevron-right")" aria-hidden="true"></i>
+                Restore from a backup instead
+            </button>
+            @if (_showRestore)
+            {
+                <div class="restore">
+                    <BackupRestore />
+                </div>
+            }
+        }
+
+        <p class="crypto-line" aria-hidden="true">
+            AES-256-GCM · PBKDF2-SHA512 · vault stays on this machine
+        </p>
+    </div>
+</section>
+
+@code {
+    private bool _vaultExists;
+    private bool _busy;
+    private bool _shake;
+    private bool _showPassword;
+    private bool _showRestore;
+    private string _password = string.Empty;
+    private string _password2 = string.Empty;
+    private string? _error;
+
+    private string PasswordInputType => _showPassword ? "text" : "password";
+
+    protected override void OnInitialized()
+    {
+        // Unlock lives on the Connections page after auth; never show the
+        // gate to an already-unlocked circuit (e.g. navigating Back).
+        if (SessionVault.IsUnlocked)
+        {
+            Navigation.NavigateTo("/connections");
+            return;
+        }
+        _vaultExists = Vault.VaultExists();
+    }
+
+    private async Task SubmitAsync()
+    {
+        if (_busy)
+            return;
+        _error = null;
+
+        try
+        {
+            if (!_vaultExists)
+            {
+                _error = ValidateNewPassword();
+                if (_error is not null)
+                {
+                    Shake();
+                    return;
+                }
+
+                _busy = true;
+                await Task.Run(() => Vault.CreateVault(_password, [])); // KDF is deliberately slow
+            }
+
+            // First run or not, the session starts the same way: derive the
+            // key from the password just typed — no second prompt after create.
+            _busy = true;
+            var ok = await Task.Run(() =>
+                Vault.TryUnlock(_password, out var key, out var profiles, out var error)
+                    ? (Ok: true, Key: key, Profiles: profiles, Error: (string?)null)
+                    : (Ok: false, Key: Array.Empty<byte>(), Profiles: new List<ConnectionProfile>(), Error: error));
+            if (!ok.Ok)
+            {
+                _error = ok.Error;
+                Shake();
+                return;
+            }
+            SessionVault.Unlock(ok.Key, ok.Profiles);
+        }
+        catch (Exception ex)
+        {
+            // Vault file IO (permissions, disk full) must not kill the circuit.
+            _error = $"Could not open the vault: {ex.Message}";
+            Shake();
+            return;
+        }
+        finally
+        {
+            _password = string.Empty;
+            _password2 = string.Empty;
+            _busy = false;
+            StateHasChanged();
+        }
+
+        Navigation.NavigateTo("/connections");
+    }
+
+    private string? ValidateNewPassword()
+    {
+        if (_password.Length < 6)
+            return "The master password must be at least 6 characters.";
+        if (!_password.Equals(_password2, StringComparison.Ordinal))
+            return "The two passwords do not match.";
+        return null;
+    }
+
+    /// <summary>Wrong password → the panel shakes once, then the class drops.</summary>
+    private void Shake()
+    {
+        _shake = true;
+        _busy = false;
+        StateHasChanged();
+        _ = ResetShakeAsync();
+    }
+
+    private async Task ResetShakeAsync()
+    {
+        try
+        {
+            await Task.Delay(450);
+            _shake = false;
+            StateHasChanged();
+        }
+        catch
+        {
+            // Circuit gone mid-shake: nothing to clean up.
+        }
+    }
+}

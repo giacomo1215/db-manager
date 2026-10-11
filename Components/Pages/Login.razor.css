@@ -1,0 +1,377 @@
+/* The vault gate. The app identity at full intensity: cool drifting aurora
+   with one warm brass accent, glass panel over a faint grid. Colors come
+   from the --dbm-* tokens in app.css so the gate follows light/dark mode;
+   fonts come from App.razor (Space Grotesk + IBM Plex Mono). */
+
+.login-root {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background:
+        radial-gradient(ellipse 120% 90% at 50% -10%,
+            var(--dbm-bg) 0%, transparent 55%),
+        var(--dbm-bg);
+    color: var(--dbm-text);
+}
+
+/* ---------------- Ambient layers ---------------- */
+
+/* Aurora: three large blurred gradient blobs drifting on slow, desynchronized
+   loops. transform-only animation keeps it cheap; the oversized inset keeps
+   the blobs from ever revealing an edge. */
+.aurora {
+    position: absolute;
+    inset: -30%;
+    pointer-events: none;
+}
+
+.blob {
+    position: absolute;
+    width: 55vmax;
+    height: 55vmax;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: var(--dbm-blob-opacity);
+    will-change: transform;
+}
+
+.blob-a {
+    left: -12%;
+    top: -22%;
+    background: radial-gradient(circle at 35% 35%, #4e5ee6 0%, transparent 60%);
+    animation: drift-a 28s ease-in-out infinite alternate;
+}
+
+.blob-b {
+    right: -16%;
+    top: 8%;
+    background: radial-gradient(circle at 60% 40%, #22d3ee 0%, transparent 55%);
+    animation: drift-b 36s ease-in-out infinite alternate;
+}
+
+.blob-c {
+    left: 22%;
+    bottom: -28%;
+    background: radial-gradient(circle at 50% 50%, #8b5cf6 0%, transparent 58%);
+    animation: drift-c 44s ease-in-out infinite alternate;
+}
+
+@keyframes drift-a {
+    to { transform: translate(12vw, 9vh) scale(1.15); }
+}
+
+@keyframes drift-b {
+    to { transform: translate(-10vw, 12vh) scale(.9); }
+}
+
+@keyframes drift-c {
+    to { transform: translate(9vw, -11vh) scale(1.2); }
+}
+
+/* Schematic grid, masked so it fades out toward the edges of the screen. */
+.grid {
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(var(--dbm-grid-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--dbm-grid-line) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: radial-gradient(ellipse 70% 62% at 50% 42%, #000 25%, transparent 78%);
+    mask-image: radial-gradient(ellipse 70% 62% at 50% 42%, #000 25%, transparent 78%);
+    pointer-events: none;
+}
+
+/* ---------------- Stage ---------------- */
+
+.login-stage {
+    position: relative;
+    z-index: 1;
+    width: min(420px, calc(100vw - 2rem));
+    max-height: 100dvh;
+    overflow-y: auto;
+    padding: 2rem 0 2.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* ---------------- Brand seal ---------------- */
+
+.seal {
+    position: relative;
+    width: 84px;
+    height: 84px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.1rem;
+}
+
+.seal .bi {
+    position: relative;
+    z-index: 1;
+    font-size: 2rem;
+    color: var(--dbm-accent);
+}
+
+/* Soft brass halo behind the glyph. */
+.seal-glow {
+    position: absolute;
+    inset: -40%;
+    border-radius: 50%;
+    background: radial-gradient(circle, var(--dbm-accent-glow) 0%, transparent 65%);
+    animation: breathe 5s ease-in-out infinite;
+}
+
+/* The one memorable element: a thin arc of light orbiting the glyph. */
+.seal-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg,
+        transparent 0deg, #4e5ee6 80deg, #22d3ee 170deg, transparent 260deg);
+    -webkit-mask: radial-gradient(farthest-side,
+        transparent calc(100% - 2px), #000 calc(100% - 2px));
+    mask: radial-gradient(farthest-side,
+        transparent calc(100% - 2px), #000 calc(100% - 2px));
+    animation: orbit 9s linear infinite;
+}
+
+@keyframes orbit {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes breathe {
+    50% { opacity: .55; transform: scale(1.08); }
+}
+
+/* ---------------- Brand text ---------------- */
+
+.brand {
+    text-align: center;
+    margin-bottom: 1.75rem;
+}
+
+.brand-name {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: 1.7rem;
+    font-weight: 700;
+    letter-spacing: -.02em;
+    color: var(--dbm-text);
+    margin: 0;
+}
+
+.brand-tag {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: .9rem;
+    color: var(--dbm-text-dim);
+    margin: .35rem 0 0;
+}
+
+/* ---------------- Glass panel ---------------- */
+
+.panel {
+    width: 100%;
+    padding: 1.6rem;
+    border-radius: 18px;
+    border: 1px solid var(--dbm-border);
+    background: linear-gradient(160deg, var(--dbm-glass), var(--dbm-glass-strong));
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    box-shadow:
+        var(--dbm-shadow),
+        inset 0 1px 0 rgba(255, 255, 255, .06);
+}
+
+/* Wrong password: the panel answers with one shake, motion that responds to
+   the user's action rather than decoration. */
+.panel-shake {
+    animation: shake .4s ease;
+}
+
+@keyframes shake {
+    10%, 90% { transform: translateX(-2px); }
+    20%, 80% { transform: translateX(3px); }
+    30%, 50%, 70% { transform: translateX(-5px); }
+    40%, 60% { transform: translateX(5px); }
+}
+
+.panel-title {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--dbm-text);
+    margin: 0 0 .4rem;
+}
+
+.panel-text {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: .84rem;
+    line-height: 1.5;
+    color: var(--dbm-text-dim);
+    margin: 0 0 1.2rem;
+}
+
+/* ---------------- Form ---------------- */
+
+.field {
+    margin-bottom: 1rem;
+}
+
+.field-label {
+    display: block;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: .8rem;
+    font-weight: 500;
+    color: var(--dbm-text-dim);
+    margin-bottom: .35rem;
+}
+
+.pw-wrap {
+    position: relative;
+}
+
+.key-input {
+    width: 100%;
+    padding: .6rem 2.6rem .6rem .85rem;
+    font-size: .95rem;
+    color: var(--dbm-text);
+    background: var(--dbm-glass-strong);
+    border: 1px solid var(--dbm-border);
+    border-radius: 11px;
+    transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.key-input::placeholder {
+    color: var(--dbm-text-faint);
+}
+
+.key-input:focus {
+    outline: none;
+    border-color: var(--dbm-focus);
+    box-shadow: 0 0 0 3px var(--dbm-focus-ring);
+}
+
+.pw-toggle {
+    position: absolute;
+    top: 50%;
+    right: .3rem;
+    transform: translateY(-50%);
+    padding: .35rem .5rem;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    color: var(--dbm-text-dim);
+    transition: color .15s ease;
+}
+
+.pw-toggle:hover {
+    color: var(--dbm-text);
+}
+
+.pw-toggle:focus-visible {
+    outline: 2px solid var(--dbm-focus);
+    outline-offset: 1px;
+}
+
+/* The brass key: the only warm element on the page. */
+.btn-key {
+    width: 100%;
+    margin-top: .2rem;
+    padding: .68rem 1rem;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: .95rem;
+    font-weight: 700;
+    color: var(--dbm-accent-ink);
+    background: linear-gradient(180deg, var(--dbm-accent-bright) 0%, var(--dbm-accent) 100%);
+    border: 0;
+    border-radius: 12px;
+    box-shadow:
+        0 8px 24px -8px var(--dbm-accent-glow),
+        inset 0 1px 0 rgba(255, 255, 255, .5);
+    transition: filter .15s ease, transform .15s ease;
+}
+
+.btn-key:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.btn-key:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+.btn-key:focus-visible {
+    outline: 2px solid var(--dbm-accent-bright);
+    outline-offset: 2px;
+}
+
+.btn-key:disabled {
+    opacity: .65;
+    cursor: wait;
+}
+
+.error-line {
+    margin: 1rem 0 0;
+    padding: .55rem .8rem;
+    font-size: .84rem;
+    color: var(--bs-danger-text-emphasis);
+    background: rgba(var(--bs-danger-rgb), .1);
+    border: 1px solid rgba(var(--bs-danger-rgb), .35);
+    border-radius: 10px;
+}
+
+/* ---------------- Restore (rare path, collapsed) ---------------- */
+
+.restore-toggle {
+    margin-top: 1.4rem;
+    padding: .3rem .5rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: .78rem;
+    color: var(--dbm-text-faint);
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    transition: color .15s ease;
+}
+
+.restore-toggle:hover {
+    color: var(--dbm-text-dim);
+}
+
+.restore-toggle:focus-visible {
+    outline: 2px solid var(--dbm-focus);
+    outline-offset: 1px;
+}
+
+.restore {
+    width: 100%;
+    margin-top: .6rem;
+}
+
+/* ---------------- Crypto footer ---------------- */
+
+.crypto-line {
+    margin: 1.6rem 0 0;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: .7rem;
+    letter-spacing: .02em;
+    color: var(--dbm-text-faint);
+}
+
+/* ---------------- Reduced motion ---------------- */
+
+/* The gate's drifting aurora and orbiting seal are ambient delight, but
+   people who opted out of motion get a still frame: same composition, no
+   animation. */
+@media (prefers-reduced-motion: reduce) {
+    .blob,
+    .seal-glow,
+    .seal-ring,
+    .panel-shake {
+        animation: none;
+    }
+}
