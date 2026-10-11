@@ -1,0 +1,450 @@
+@page "/"
+@page "/connections"
+@using System.Threading
+@inject IVaultService Vault
+@inject ISessionVault SessionVault
+@inject IDbConnectorRegistry Registry
+@inject IToastService Toasts
+@inject NavigationManager Navigation
+
+<PageTitle>Connections — db-manager</PageTitle>
+
+<div class="d-flex flex-row justify-content-between align-items-center mb-3">
+    <h3 class="h3 mb-0">Connections</h3>
+</div>
+
+@* ---------------- Unlocked: profiles + add/edit form ---------------- *@
+
+<div class="row g-3">
+        <div class="col-12 col-lg-5">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title mb-3">
+                        <i class="bi bi-hdd-network me-2"></i>Saved connections
+                    </h5>
+                    @if (SessionVault.Profiles.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">
+                            No connections yet — add one on the right.
+                        </p>
+                    }
+                    else
+                    {
+                        <div class="list-group">
+                            @foreach (var profile in SessionVault.Profiles)
+                            {
+                                <div class="list-group-item d-flex align-items-center gap-2">
+                                    <i class="bi @EngineIcon(profile.EngineKey)" title="@EngineName(profile.EngineKey)"></i>
+                                    <div class="flex-grow-1">
+                                        <div class="fw-semibold">@profile.Name</div>
+                                        <div class="text-body-secondary small">@EngineName(profile.EngineKey)</div>
+                                    </div>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" title="Open in SQL editor"
+                                            @onclick="() => OpenInEditor(profile.Id)">
+                                        <i class="bi bi-play"></i>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Edit"
+                                            @onclick="() => StartEdit(profile)">
+                                        <i class="bi bi-pencil"></i>
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-outline-danger" title="Delete"
+                                            @onclick="() => DeleteProfile(profile)">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+
+            @* Change master password: rare operation, collapsed by default. *@
+            <div class="card mt-3">
+                <div class="card-body">
+                    <h5 class="card-title">
+                        <button type="button" class="btn btn-sm btn-outline-secondary me-2"
+                                @onclick="() => _showChangePw = !_showChangePw">
+                            <i class="bi bi-chevron-@(_showChangePw ? "down" : "right")"></i>
+                        </button>
+                        <i class="bi bi-key me-2"></i>Change master password
+                    </h5>
+                    @if (_showChangePw)
+                    {
+                        <div class="mb-2">
+                            <label class="form-label">Current password</label>
+                            <input type="password" class="form-control" @bind="_currentPw" />
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">New password</label>
+                            <input type="password" class="form-control" @bind="_masterPassword" />
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Repeat new password</label>
+                            <input type="password" class="form-control" @bind="_masterPassword2" />
+                        </div>
+                        <button type="button" class="btn btn-outline-primary" @onclick="ChangeMasterPasswordAsync">
+                            <i class="bi bi-arrow-repeat me-1"></i>Change
+                        </button>
+                        @if (_masterError is not null)
+                        {
+                            <div class="alert alert-danger mt-3 mb-0 py-2">@_masterError</div>
+                        }
+                    }
+                </div>
+            </div>
+
+            <BackupRestore />
+        </div>
+
+        <div class="col-12 col-lg-7">
+            <div class="card">
+                <div class="card-body">
+                    <h5 class="card-title mb-3">
+                        <i class="bi bi-plus-circle me-2"></i>@(_editingId is null ? "Add connection" : "Edit connection")
+                    </h5>
+
+                    <div class="row g-2 mb-2">
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Name</label>
+                            <input type="text" class="form-control" placeholder="Prod reporting" @bind="_profileName" />
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <label class="form-label">Engine</label>
+                            <select class="form-select" @bind="_form.EngineKey">
+                                @foreach (var connector in Registry.Connectors)
+                                {
+                                    <option value="@connector.EngineKey">@connector.DisplayName</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+
+                    @if (_form.EngineKey == "sqlite")
+                    {
+                        <div class="mb-2">
+                            <label class="form-label">Database file</label>
+                            <input type="text" class="form-control" placeholder="/path/to/database.db (created when missing)"
+                                   @bind="_form.FilePath" />
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="row g-2 mb-2">
+                            <div class="col-12 col-md-6">
+                                <label class="form-label">Host</label>
+                                <input type="text" class="form-control" placeholder="192.168.1.120" @bind="_form.Host" />
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <label class="form-label">Port</label>
+                                <input type="text" class="form-control" placeholder="@SelectedConnector?.DefaultPort"
+                                       @bind="_portText" />
+                            </div>
+                            <div class="col-6 col-md-3">
+                                <label class="form-label">Database</label>
+                                <input type="text" class="form-control" @bind="_form.Database" />
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <label class="form-label">User</label>
+                                <input type="text" class="form-control" autocomplete="off" @bind="_form.Username" />
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <label class="form-label">Password</label>
+                                <input type="password" class="form-control" @bind="_form.Password" />
+                            </div>
+                        </div>
+                    }
+
+                    <div class="form-check mb-3">
+                        <input type="checkbox" class="form-check-input" id="useRaw" @bind="_form.UseRaw" />
+                        <label class="form-check-label" for="useRaw">Use a raw connection string instead</label>
+                    </div>
+                    @if (_form.UseRaw)
+                    {
+                        <textarea class="form-control mb-3 font-monospace" rows="3"
+                                  placeholder="Server=…;Database=…;User Id=…;Password=…"
+                                  @bind="_form.RawConnectionString"></textarea>
+                    }
+
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-secondary" @onclick="TestConnectionAsync">
+                            <i class="bi bi-plug me-1"></i>@(_testing ? "Testing…" : "Test connection")
+                        </button>
+                        <button type="button" class="btn btn-primary" @onclick="SaveProfileAsync">
+                            <i class="bi bi-save me-1"></i>Save
+                        </button>
+                        @if (_editingId is not null)
+                        {
+                            <button type="button" class="btn btn-outline-secondary" @onclick="ResetForm">
+                                <i class="bi bi-x me-1"></i>Cancel
+                            </button>
+                        }
+                    </div>
+
+                    @if (_formError is not null)
+                    {
+                        <div class="alert alert-danger mt-3 mb-0 py-2">@_formError</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+@code {
+    // ---- Change-password state ----
+    private string _masterPassword = string.Empty;
+    private string _masterPassword2 = string.Empty;
+    private string? _masterError;
+
+    // ---- Change password state ----
+    private bool _showChangePw;
+    private string _currentPw = string.Empty;
+
+    // ---- Profile form state ----
+    private string _profileName = string.Empty;
+    private string _portText = string.Empty;
+    private Guid? _editingId;
+    private bool _testing;
+    private string? _formError;
+    private ConnectionFormData _form = new();
+
+    private IDbConnector? SelectedConnector => Registry.Resolve(_form.EngineKey);
+
+    protected override void OnInitialized()
+    {
+        // The vault gate at /login owns the locked experience; everything on
+        // this page needs the decrypted profiles.
+        if (!SessionVault.IsUnlocked)
+            Navigation.NavigateTo("/login");
+    }
+
+    private string? ValidateMasterPassword()
+    {
+        if (_masterPassword.Length < 6)
+            return "The master password must be at least 6 characters.";
+        if (!_masterPassword.Equals(_masterPassword2, StringComparison.Ordinal))
+            return "The two passwords do not match.";
+        return null;
+    }
+
+    private async Task ChangeMasterPasswordAsync()
+    {
+        _masterError = null;
+
+        // Verify the CURRENT password first — the change must not succeed on a
+        // guess (the profiles are already in memory, so only the check matters).
+        var check = await Task.Run(() =>
+            Vault.TryUnlock(_currentPw, out _, out _, out var error) ? (string?)null : error);
+        if (check is not null)
+        {
+            _masterError = check;
+            StateHasChanged();
+            return;
+        }
+
+        _masterError = ValidateMasterPassword();
+        if (_masterError is not null)
+        {
+            StateHasChanged();
+            return;
+        }
+
+        try
+        {
+            var newKey = await Task.Run(() => Vault.ChangeMasterPassword(_masterPassword, SessionVault.Profiles));
+            SessionVault.Unlock(newKey, SessionVault.Profiles);
+        }
+        catch (Exception ex)
+        {
+            _masterError = $"Could not change the master password: {ex.Message}";
+            StateHasChanged();
+            return;
+        }
+
+        _currentPw = string.Empty;
+        _masterPassword = string.Empty;
+        _masterPassword2 = string.Empty;
+        _showChangePw = false;
+        Toasts.Show("Vault", "Master password changed.", ToastKind.Success);
+        StateHasChanged();
+    }
+
+    // ---------------- Profile CRUD ----------------
+
+    private void StartEdit(ConnectionProfile profile)
+    {
+        _editingId = profile.Id;
+        _profileName = profile.Name;
+        _form = new ConnectionFormData
+        {
+            EngineKey = profile.EngineKey,
+            // Connection strings cannot be reliably decomposed back into fields,
+            // so editing an existing profile always exposes the raw string.
+            UseRaw = true,
+            RawConnectionString = profile.ConnectionString
+        };
+        _portText = string.Empty;
+        _formError = null;
+    }
+
+    private void ResetForm()
+    {
+        _editingId = null;
+        _profileName = string.Empty;
+        _form = new ConnectionFormData();
+        _portText = string.Empty;
+        _formError = null;
+    }
+
+    /// <summary>Connection string the Save/Test actions will use.</summary>
+    private (string? Error, string ConnectionString) BuildConnectionString()
+    {
+        if (_form.UseRaw)
+        {
+            if (string.IsNullOrWhiteSpace(_form.RawConnectionString))
+                return ("The connection string is empty.", string.Empty);
+            return (null, _form.RawConnectionString.Trim());
+        }
+
+        var connector = SelectedConnector;
+        if (connector is null)
+            return ("Unknown engine.", string.Empty);
+
+        if (connector.EngineKey == "sqlite" && string.IsNullOrWhiteSpace(_form.FilePath))
+            return ("Database file path is required.", string.Empty);
+        if (connector.EngineKey != "sqlite" && string.IsNullOrWhiteSpace(_form.Host))
+            return ("Host is required.", string.Empty);
+
+        // Port is optional: the connector falls back to its default.
+        if (!string.IsNullOrWhiteSpace(_portText))
+        {
+            if (!int.TryParse(_portText.Trim(), out var port) || port is < 1 or > 65535)
+                return ("Port must be a number between 1 and 65535.", string.Empty);
+            _form.Port = port;
+        }
+        else
+        {
+            _form.Port = null;
+        }
+
+        return (null, connector.BuildConnectionString(_form));
+    }
+
+    private async Task TestConnectionAsync()
+    {
+        _formError = null;
+        var (error, cs) = BuildConnectionString();
+        if (error is not null)
+        {
+            _formError = error;
+            StateHasChanged();
+            return;
+        }
+
+        var connector = SelectedConnector!;
+        _testing = true;
+        StateHasChanged();
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await connector.TestConnectionAsync(cs, cts.Token);
+            Toasts.Show("Connection", "Connection successful.", ToastKind.Success);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Connection failed", ex.Message, ToastKind.Danger);
+        }
+        finally
+        {
+            _testing = false;
+            StateHasChanged();
+        }
+    }
+
+    private void SaveProfileAsync()
+    {
+        _formError = null;
+
+        if (string.IsNullOrWhiteSpace(_profileName))
+        {
+            _formError = "Name is required.";
+            StateHasChanged();
+            return;
+        }
+
+        var (error, cs) = BuildConnectionString();
+        if (error is not null)
+        {
+            _formError = error;
+            StateHasChanged();
+            return;
+        }
+
+        var profiles = SessionVault.Profiles.ToList();
+        if (_editingId is { } editingId)
+        {
+            var existing = profiles.Single(p => p.Id == editingId);
+            existing.Name = _profileName.Trim();
+            existing.EngineKey = _form.EngineKey;
+            existing.ConnectionString = cs;
+        }
+        else
+        {
+            profiles.Add(new ConnectionProfile
+            {
+                Name = _profileName.Trim(),
+                EngineKey = _form.EngineKey,
+                ConnectionString = cs
+            });
+        }
+
+        try
+        {
+            SessionVault.SaveProfiles(profiles);
+        }
+        catch (Exception ex)
+        {
+            // Vault file IO failure: the profile list stays unsaved, so say so —
+            // silently losing a connection is worse than an inline error.
+            _formError = $"Could not save to the vault: {ex.Message}";
+            StateHasChanged();
+            return;
+        }
+
+        ResetForm();
+        StateHasChanged();
+    }
+
+    private void DeleteProfile(ConnectionProfile profile)
+    {
+        var profiles = SessionVault.Profiles.Where(p => p.Id != profile.Id).ToList();
+        try
+        {
+            SessionVault.SaveProfiles(profiles);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Vault error", $"Could not save to the vault: {ex.Message}", ToastKind.Danger);
+            return;
+        }
+        if (_editingId == profile.Id)
+            ResetForm();
+        StateHasChanged();
+    }
+
+    private void OpenInEditor(Guid profileId) =>
+        Navigation.NavigateTo($"/sql-editor?profile={profileId}");
+
+    // ---------------- Display helpers ----------------
+
+    private static string EngineIcon(string engineKey) => engineKey switch
+    {
+        "mssql" => "bi-server",
+        "mysql" => "bi-database-fill",
+        "postgres" => "bi-database-fill-gear",
+        "sqlite" => "bi-filetype-sql",
+        _ => "bi-database"
+    };
+
+    private string EngineName(string engineKey) =>
+        Registry.Resolve(engineKey)?.DisplayName ?? engineKey;
+}

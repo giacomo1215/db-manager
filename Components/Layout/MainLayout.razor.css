@@ -1,0 +1,34 @@
+.page {
+    min-height: 100vh;
+}
+
+/* Glass navbar: the app chrome floats on the ambient field like every other
+   panel. Sticky so it stays while pages scroll; scoped selector beats
+   Bootstrap's .border-bottom var, which would draw the default gray. */
+.page ::deep .navbar {
+    position: sticky;
+    top: 0;
+    z-index: 1020;
+    background: var(--dbm-glass);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    border-bottom: 1px solid var(--dbm-border);
+    box-shadow: 0 12px 32px -20px rgba(0, 0, 0, .5);
+}
+
+/* Brand mark: the vault seal, miniaturized — brass on glass, same glyph the
+   login gates with. */
+.page ::deep .navbar-brand .bi {
+    color: var(--dbm-accent);
+    text-shadow: 0 0 12px var(--dbm-accent-glow);
+}
+
+/* Nav links ride on glass, so the muted default would fight the theme. */
+.page ::deep .navbar .nav-link {
+    color: var(--dbm-text-dim);
+}
+
+.page ::deep .navbar .nav-link:hover,
+.page ::deep .navbar .nav-link.active {
+    color: var(--dbm-text);
+}

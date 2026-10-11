@@ -1,0 +1,293 @@
+@* Backup & Restore: collapsible card on the Connections page. Encrypted export
+   and encrypted restore work while locked (ciphertext only, and the backup's
+   own master password is what matters); plaintext export/import need an
+   unlocked session because the derived key exists only while unlocked. *@
+@using System.IO
+@using System.Text
+@inject IVaultService Vault
+@inject IBackupService Backup
+@inject ISessionVault SessionVault
+@inject IToastService Toasts
+@inject IJSRuntime JS
+
+<div class="card mt-3">
+    <div class="card-body">
+        <h5 class="card-title">
+            <button type="button" class="btn btn-sm btn-outline-secondary me-2"
+                    @onclick="() => _showBackup = !_showBackup">
+                <i class="bi bi-chevron-@(_showBackup ? "down" : "right")"></i>
+            </button>
+            <i class="bi bi-cloud-arrow-down me-2"></i>Backup &amp; Restore
+        </h5>
+        @if (_showBackup)
+        {
+            <h6 class="card-subtitle mb-2 text-body-secondary"><i class="bi bi-box-arrow-up me-1"></i>Export</h6>
+            <div class="d-flex flex-wrap gap-2 mb-2">
+                <button type="button" class="btn btn-outline-primary" @onclick="ExportEncryptedAsync">
+                    <i class="bi bi-shield-lock me-1"></i>Encrypted vault copy
+                </button>
+                <button type="button" class="btn btn-outline-secondary"
+                        disabled="@(!SessionVault.IsUnlocked)" @onclick="ExportPlaintextAsync">
+                    <i class="bi bi-filetype-json me-1"></i>Plaintext JSON
+                </button>
+            </div>
+            @if (SessionVault.IsUnlocked)
+            {
+                <div class="alert alert-warning py-2 small mb-3">
+                    <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                    The plaintext export contains all connection strings with
+                    credentials in readable form. Store it securely and delete
+                    it when you no longer need it.
+                </div>
+            }
+
+            <h6 class="card-subtitle mb-2 text-body-secondary">
+                <i class="bi bi-box-arrow-in-down me-1"></i>Restore (replaces everything)
+            </h6>
+            <p class="card-text text-body-secondary small">
+                Restoring replaces ALL saved connections with the backup's.
+                Refresh other browser tabs afterwards — they keep their
+                pre-restore state.
+            </p>
+            @* @key forces a fresh file input once a restore completes or is cancelled. *@
+            <InputFile OnChange="OnImportFileSelectedAsync" @key="_importInputKey"
+                       accept=".json,application/json" class="form-control" />
+
+            @if (_importFormat is not null && _importError is null)
+            {
+                <div class="alert alert-info py-2 small mt-2 mb-0">
+                    <i class="bi bi-file-earmark me-1"></i>@_importFileName — @_importSummary
+                </div>
+            }
+            @if (_importFormat == BackupFormat.EncryptedVault && !_backupPasswordChecked && _importError is null)
+            {
+                <div class="mb-2 mt-2">
+                    <label class="form-label">Backup's master password</label>
+                    <input type="password" class="form-control" @bind="_backupPassword" />
+                </div>
+                <button type="button" class="btn btn-outline-primary" @onclick="CheckBackupPasswordAsync">
+                    <i class="bi bi-shield-check me-1"></i>Check password
+                </button>
+            }
+            @if (_pendingRestore)
+            {
+                <div class="alert alert-danger d-flex flex-row align-items-center gap-2 mt-2 mb-0 py-2" role="alert">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <span class="flex-grow-1 small">Restoring replaces ALL saved connections with the backup's. Continue?</span>
+                    <button type="button" class="btn btn-sm btn-danger" @onclick="ConfirmRestoreAsync">Restore</button>
+                    <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelRestore">Cancel</button>
+                </div>
+            }
+            @if (_importError is not null)
+            {
+                <div class="alert alert-danger mt-2 mb-0 py-2">@_importError</div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    private const int MaxBackupSizeBytes = 10 * 1024 * 1024; // vault files are tiny; abuse protection only
+
+    private bool _showBackup; // rare operation, collapsed by default (like the change-password card)
+
+    // ---- Import state machine ----
+    private int _importInputKey;              // bumped to reset the InputFile
+    private string _importJson = string.Empty;
+    private string _importFileName = string.Empty;
+    private BackupFormat? _importFormat;      // null until a file is accepted
+    private string? _importSummary;
+    private bool _backupPasswordChecked;      // encrypted restore: password proven via TryUnlockJson
+    private string _backupPassword = string.Empty;
+    private bool _pendingRestore;             // the "Restore anyway?" write gate
+    private string? _importError;
+
+    // ---------------- Export ----------------
+
+    private async Task ExportEncryptedAsync()
+    {
+        try
+        {
+            var json = Backup.GetEncryptedExport();
+            var name = $"db-manager-vault-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+            await JS.InvokeVoidAsync("dbmSite.downloadTextFile", name, "application/json", json);
+            Toasts.Show("Backup", "Encrypted vault copy downloaded.", ToastKind.Success);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Backup failed", ex.Message, ToastKind.Danger);
+        }
+    }
+
+    private async Task ExportPlaintextAsync()
+    {
+        if (!SessionVault.IsUnlocked)
+            return; // button is disabled; guard for safety
+
+        try
+        {
+            var json = Backup.BuildPlaintextExport(SessionVault.Profiles);
+            var name = $"db-manager-connections-plaintext-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+            await JS.InvokeVoidAsync("dbmSite.downloadTextFile", name, "application/json", json);
+            Toasts.Show("Backup", "Plaintext export downloaded — handle it with care.", ToastKind.Warning);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Backup failed", ex.Message, ToastKind.Danger);
+        }
+    }
+
+    // ---------------- Import ----------------
+
+    private async Task OnImportFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        ResetImport();
+        try
+        {
+            var file = e.File;
+            if (file.Size > MaxBackupSizeBytes)
+            {
+                _importError = "The file is larger than 10 MB.";
+                return;
+            }
+            using var reader = new StreamReader(file.OpenReadStream(MaxBackupSizeBytes));
+            _importJson = await reader.ReadToEndAsync();
+            _importFileName = file.Name;
+
+            var format = Backup.DetectFormat(_importJson);
+            switch (format)
+            {
+                case BackupFormat.Unrecognized:
+                    _importError = "Unrecognized file — expected an encrypted vault backup or a plaintext export.";
+                    break;
+
+                case BackupFormat.PlaintextExport:
+                    if (!SessionVault.IsUnlocked)
+                    {
+                        // The session key exists only while unlocked; the whole
+                        // plaintext restore is a SaveProfiles under it.
+                        _importError = "Unlock the vault first to restore a plaintext export.";
+                    }
+                    else if (Backup.TryReadPlaintextExport(_importJson, out var profiles, out var err))
+                    {
+                        _importFormat = format;
+                        _importSummary = $"Plaintext export — {profiles.Count} connection(s).";
+                        _pendingRestore = true;
+                    }
+                    else
+                    {
+                        _importError = err;
+                    }
+                    break;
+
+                case BackupFormat.EncryptedVault:
+                    // Password check comes next (button below); nothing written yet.
+                    _importFormat = format;
+                    _importSummary = "Encrypted vault backup.";
+                    break;
+            }
+        }
+        catch (IOException)
+        {
+            _importError = "The file is larger than 10 MB.";
+        }
+        catch (Exception ex)
+        {
+            _importError = $"Could not read the file: {ex.Message}";
+        }
+    }
+
+    private async Task CheckBackupPasswordAsync()
+    {
+        _importError = null;
+        // PBKDF2 is deliberately slow: keep it off the circuit, like UnlockAsync.
+        var ok = await Task.Run(() =>
+            Vault.TryUnlockJson(_importJson, _backupPassword, out var profiles, out var error)
+                ? (Ok: true, Count: profiles.Count, Error: (string?)null)
+                : (Ok: false, Count: 0, Error: error));
+        if (!ok.Ok)
+        {
+            _importError = ok.Error; // "Wrong master password." / corrupted — nothing was written
+            return;
+        }
+        _backupPasswordChecked = true;
+        _importSummary = $"Encrypted vault backup — {ok.Count} connection(s).";
+        _pendingRestore = true;
+    }
+
+    private async Task ConfirmRestoreAsync()
+    {
+        _importError = null;
+        try
+        {
+            if (_importFormat == BackupFormat.EncryptedVault)
+            {
+                // Re-validate before writing: the password field may have
+                // changed since the check. PBKDF2 cost is fine, disk stays
+                // untouched while the password is wrong.
+                var check = await Task.Run(() =>
+                    Vault.TryUnlockJson(_importJson, _backupPassword, out var profiles, out var error)
+                        ? (Ok: true, Profiles: profiles, Error: (string?)null)
+                        : (Ok: false, Profiles: new List<ConnectionProfile>(), Error: error));
+                if (!check.Ok)
+                {
+                    _importError = check.Error;
+                    return;
+                }
+
+                await Task.Run(() => Vault.ReplaceVault(_importJson));
+
+                // The on-disk key material changed: re-unlock this circuit from
+                // the new file so the session key matches the restored vault.
+                var unlocked = await Task.Run(() =>
+                    Vault.TryUnlock(_backupPassword, out var key, out var profiles, out var error)
+                        ? (Ok: true, Key: key, Profiles: profiles, Error: (string?)null)
+                        : (Ok: false, Key: Array.Empty<byte>(), Profiles: new List<ConnectionProfile>(), Error: error));
+                if (!unlocked.Ok)
+                    throw new InvalidOperationException("The restored vault could not be re-read.");
+                SessionVault.Unlock(unlocked.Key, unlocked.Profiles);
+
+                Toasts.Show("Restore",
+                    $"Vault restored — {unlocked.Profiles.Count} connection(s). The master password is now the backup's.",
+                    ToastKind.Success);
+            }
+            else // PlaintextExport — unlocked (gated at file selection)
+            {
+                if (!Backup.TryReadPlaintextExport(_importJson, out var profiles, out var err))
+                {
+                    _importError = err;
+                    return;
+                }
+                // Re-encrypts the whole list under the current key, Guids
+                // preserved — replace-all comes for free.
+                SessionVault.SaveProfiles(profiles);
+                Toasts.Show("Restore", $"{profiles.Count} connection(s) restored into the current vault.", ToastKind.Success);
+            }
+        }
+        catch (Exception ex)
+        {
+            _importError = $"Could not restore: {ex.Message}"; // never throw in the UI
+            return;
+        }
+        CancelRestore();
+    }
+
+    private void CancelRestore()
+    {
+        ResetImport();
+        _importInputKey++; // force a fresh <InputFile> so the old selection is gone
+    }
+
+    /// <summary>Clears the whole import state (but not the InputFile reset key).</summary>
+    private void ResetImport()
+    {
+        _importJson = string.Empty;
+        _importFileName = string.Empty;
+        _importFormat = null;
+        _importSummary = null;
+        _backupPasswordChecked = false;
+        _backupPassword = string.Empty;
+        _pendingRestore = false;
+        _importError = null;
+    }
+}

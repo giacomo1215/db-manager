@@ -1,0 +1,194 @@
+# ---------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# Build results from dotnet publish / standalone-exe output (roadmap.md phase 1)
+[Pp]ublish/
+[Pp]ublished/
+artifacts/
+publish-output/
+
+# .NET single-file publish extraction / bundle leftovers
+*.pdb.lock
+*.singleexe.tmp/
+
+# ---------------------------------------------------------------
+# Visual Studio / Rider / VS Code / Visual Studio for Mac
+# ---------------------------------------------------------------
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.users
+*.userprefs
+*.sln.docstates
+*.slnx.docstates
+*.pidb
+*.svclog
+*.svcmap
+*.log
+*.tlog
+ipch/
+*.aps
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.cachefile
+*.VC.db
+*.VC.VC.opendb
+
+# Rider / ReSharper / dotCover / dotTrace
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+*.dotCover
+*.dotTrace
+
+# Test results & coverage
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+TestResults/
+*.coverage
+*.coveragexml
+coverage.json
+coverage*.xml
+*.lcov
+*.trx
+*.apk
+*.dsym
+
+# NuGet packages & caches
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+project.lock.json
+project.fragment.lock.json
+.nuget/
+nuget.exe
+
+# ---------------------------------------------------------------
+# Publish profiles & IIS
+# ---------------------------------------------------------------
+*.pubxml.user
+*.pubxml
+!**/Properties/PublishProfiles/*.pubxml
+PublishScripts/
+# IIS: connection strings often contain secrets — never commit
+*.config.transform
+.iis
+/IISExpress/
+
+# ---------------------------------------------------------------
+# Secrets & local configuration
+# ---------------------------------------------------------------
+# Local dev overrides can contain real connection strings / paths
+appsettings.*.local.json
+*.development.json.user
+# Never commit credentials, vault files, or key material
+*.pfx
+*.p12
+*.key
+*.pem
+*.crt
+*.cer
+*.jks
+*.keystore
+secrets.json
+*.secret
+*.vault
+# db-manager encrypted connection vault lives here by default (~/.db-manager/)
+vault.json
+connections.json
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+*.mdb
+*.accdb
+*.mdf
+*.ldf
+*.ndf
+*.dbf
+*.[Bb]ak
+*.bacpac
+*.dacpac
+*.dump
+*.dumpfile
+*.sql.gz
+*.sql.bz2
+# SQL dumps produced by the export panel
+*.sql
+!wwwroot/**/*.sql
+!**/Migrations/*.sql
+
+# ---------------------------------------------------------------
+# Logs & temp files
+# ---------------------------------------------------------------
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+*.dmg
+*.crashpad
+*.lock
+!packages.lock.json
+
+# ---------------------------------------------------------------
+# Backups & merge artifacts
+# ---------------------------------------------------------------
+*.orig
+*.rej
+*.BASE
+*.BACKUP.*
+*.LOCAL.*
+*.REMOTE.*
+*_BACKUP_*.dat
+*_BASE_*.dat
+*_LOCAL_*.dat
+*_REMOTE_*.dat
+
+# ---------------------------------------------------------------
+# Node / Monaco / front-end tooling (wwwroot/js is hand-written,
+# but exclude any stray npm output)
+# ---------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.yarn/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+dist/
+.cache/
+
+# ---------------------------------------------------------------
+# OS / editor cruft
+# ---------------------------------------------------------------
+.DS_Store?
+.Spotlight-V100
+.Trashes
+$RECYCLE.BIN/
+*.lnk
+.directory
+.Trash-*

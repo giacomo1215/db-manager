@@ -1,0 +1,63 @@
+@inherits LayoutComponentBase
+@inject NavigationManager Navigation
+@inject ISessionVault SessionVault
+
+<div class="page">
+    @* No navbar-light/bg-light: those classes force the light look even when
+       data-bs-theme="dark" is set on <html>. The bare .navbar is theme-aware in
+       Bootstrap 5.3 — text, brand and the toggler icon all derive from
+       --bs-emphasis-color, so the navbar just sits on --bs-body-bg and follows
+       the active theme. *@
+    <nav class="navbar navbar-expand-lg border-bottom">
+        <div class="container-fluid">
+            <a class="navbar-brand d-flex align-items-center gap-2" href="/">
+                <i class="bi bi-database"></i>
+                <span class="fw-semibold">db-manager</span>
+            </a>
+
+            <ul class="navbar-nav flex-row gap-2 ms-3">
+                <li class="nav-item">
+                    <NavLink class="nav-link" href="/connections" Match="NavLinkMatch.Prefix">Connections</NavLink>
+                </li>
+                <li class="nav-item">
+                    <NavLink class="nav-link" href="/sql-editor">SQL Editor</NavLink>
+                </li>
+            </ul>
+
+            <div class="ms-auto d-flex align-items-center gap-2">
+                @* Live theme flip (site.js): one data-bs-theme swap restyles
+                   the app via CSS vars. Never a reload — the vault unlock
+                   state is circuit-scoped, so a reload locks the user out. *@
+                <button type="button" class="btn btn-sm btn-outline-secondary" title="Toggle theme"
+                        aria-label="Toggle theme" onclick="dbmSite.toggleTheme()">
+                    @* Icons swap purely via data-bs-theme CSS — no JS bookkeeping. *@
+                    <i class="bi bi-moon-stars theme-icon-light"></i>
+                    <i class="bi bi-sun-fill theme-icon-dark"></i>
+                </button>
+                @if (SessionVault.IsUnlocked)
+                {
+                    @* Lock clears the derived key + profiles from this circuit's
+                       memory; every page redirects to the unlock form. *@
+                    <button type="button" class="btn btn-sm btn-outline-secondary" title="Lock vault"
+                            @onclick="Lock">
+                        <i class="bi bi-lock-fill me-1"></i>Lock
+                    </button>
+                }
+            </div>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-3 px-4">
+        @Body
+    </div>
+</div>
+
+<Toasts />
+
+@code {
+    private void Lock()
+    {
+        SessionVault.Lock();
+        Navigation.NavigateTo("/login");
+    }
+}

@@ -1,0 +1,320 @@
+/*
+ * Scoped styles for the SQL Editor page. Only Blazor-rendered elements live
+ * here — Monaco draws its own DOM (with its own vs/vs-dark theme) inside
+ * .sql-editor-host and needs nothing from app CSS.
+ * Surfaces use the --dbm-* glass tokens from app.css (light/dark aware);
+ * sticky headers and the footer use the opaque --dbm-panel-solid because
+ * content must not show through them while scrolling.
+ */
+
+/* Page layout: fixed sidebar + flexible main column, total height fills the
+   viewport below the navbar (approximated from MainLayout chrome). */
+.sql-root {
+    display: flex;
+    flex-direction: row;
+    gap: 0.75rem;
+    height: calc(100vh - 180px);
+    min-height: 480px;
+}
+
+/* ---------------- Sidebar ---------------- */
+/* Width comes from an inline style (component state / JS drag); the values here
+   are only the initial fallback and the resize clamps mirrored from JS (180..480). */
+.sql-sidebar {
+    width: 280px;
+    min-width: 180px;
+    max-width: 480px;
+    flex: 0 0 auto;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border: 1px solid var(--dbm-border);
+    border-radius: 14px;
+    background-color: var(--dbm-glass);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+}
+
+/* Vertical drag handle between sidebar and main area. */
+.sql-sidebar-dragger {
+    width: 8px;
+    flex: 0 0 8px;
+    border-radius: 4px;
+    background-color: var(--dbm-glass-strong);
+    cursor: col-resize;
+    touch-action: none;
+}
+
+.sql-sidebar-dragger:hover {
+    background-color: var(--dbm-accent-bright);
+    box-shadow: 0 0 12px -2px var(--dbm-accent-glow);
+}
+
+.sql-sidebar-search {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--dbm-border);
+    position: sticky;
+    top: 0;
+    /* Opaque: names must not scroll through the search box. */
+    background-color: var(--dbm-panel-solid);
+    z-index: 1;
+}
+
+.sql-sidebar-group {
+    padding-bottom: 0.25rem;
+}
+
+.sql-sidebar-group-title {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--dbm-text-dim);
+    padding: 0.5rem 0.75rem 0.25rem;
+}
+
+.sql-sidebar-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0 0.25rem;
+}
+
+/* Chevron and its invisible spacer keep name buttons vertically aligned
+   whether or not an object has columns. */
+.sql-expand-btn {
+    width: 18px;
+    flex: 0 0 18px;
+    line-height: 1;
+    color: var(--dbm-text-dim);
+}
+
+.sql-expand-spacer {
+    display: inline-block;
+    width: 18px;
+    flex: 0 0 18px;
+}
+
+.sql-name-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left;
+    background: none;
+    border: none;
+    padding: 2px 6px;
+    font-size: 0.85rem;
+    font-family: var(--bs-font-monospace);
+    color: var(--dbm-text);
+    border-radius: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sql-name-btn:hover {
+    background-color: var(--dbm-glass-strong);
+}
+
+.sql-top-btn {
+    flex: 0 0 auto;
+    font-size: 0.65rem;
+    padding: 0 6px;
+}
+
+.sql-proc-run {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    padding: 0 6px;
+    color: var(--dbm-text-dim);
+}
+
+.sql-proc-run:hover {
+    color: var(--bs-success);
+}
+
+.sql-columns {
+    margin-left: 1.5rem;
+    border-left: 2px solid var(--dbm-border);
+}
+
+.sql-column-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    background: none;
+    border: none;
+    padding: 1px 8px;
+    font-size: 0.78rem;
+    font-family: var(--bs-font-monospace);
+    color: var(--dbm-text);
+}
+
+.sql-column-row:hover {
+    background-color: var(--dbm-glass-strong);
+}
+
+.sql-column-type {
+    color: var(--dbm-text-dim);
+    font-size: 0.7rem;
+    flex: 0 0 auto;
+}
+
+/* ---------------- Main: editor + results ---------------- */
+.sql-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Editor pane: flexes to fill when results are hidden (first load), shrinks
+   when the results pane appears. display:flex so .sql-editor-host (Monaco's
+   container) resolves to a definite size — Monaco cannot measure a
+   height:auto div. */
+.sql-editor-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    border: 1px solid var(--dbm-border);
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.sql-editor-host {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+}
+
+.sql-divider {
+    height: 8px;
+    flex: 0 0 8px;
+    margin: 2px 0;
+    border-radius: 4px;
+    background-color: var(--dbm-glass-strong);
+    cursor: row-resize;
+    touch-action: none; /* pointer capture for drag must not scroll on touch devices */
+}
+
+.sql-divider:hover {
+    background-color: var(--dbm-accent-bright);
+    box-shadow: 0 0 12px -2px var(--dbm-accent-glow);
+}
+
+.sql-results-pane {
+    flex: 0 0 50%; /* overridden inline with the dragged percentage */
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--dbm-border);
+    border-radius: 14px;
+    overflow: hidden;
+    background-color: var(--dbm-glass);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+}
+
+/* ---------------- Results content ---------------- */
+.sql-results-header {
+    flex: 0 0 auto; /* never shrink: tabs/error must stay visible above the grid */
+    overflow-x: auto;
+}
+.sql-error {
+    padding: 0.5rem 0.75rem;
+    background-color: var(--bs-danger-bg-subtle);
+    color: var(--bs-danger-text-emphasis);
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    border-bottom: 1px solid var(--dbm-border);
+}
+
+.sql-tabs {
+    flex: 0 0 auto;
+    padding: 0 0.25rem;
+    border-bottom: 1px solid var(--dbm-border);
+}
+
+.sql-tabs .nav-link {
+    font-size: 0.8rem;
+    padding: 0.25rem 0.6rem;
+    cursor: pointer;
+}
+
+.sql-results-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+}
+
+.sql-message {
+    padding: 0.75rem;
+    color: var(--dbm-text);
+    font-size: 0.9rem;
+}
+
+/* Grid: sticky header row stays visible while scrolling vertically; cells
+   truncate with a title tooltip (rendered on the span) for long values. */
+.sql-grid {
+    width: max-content; /* wide results grow horizontally, not squashed */
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    font-family: var(--bs-font-monospace);
+}
+
+.sql-grid th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    /* Opaque: rows scroll under the header and must not show through. */
+    background-color: var(--dbm-panel-solid);
+    color: var(--dbm-text);
+    padding: 4px 10px;
+    border-bottom: 2px solid var(--dbm-border-strong);
+    white-space: nowrap;
+    text-align: left;
+}
+
+.sql-grid td {
+    padding: 3px 10px;
+    border-bottom: 1px solid var(--dbm-border);
+    white-space: nowrap;
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sql-grid tbody tr:hover td {
+    background-color: var(--dbm-glass-strong);
+}
+
+/* SSMS-style right-aligned numerics with tabular digits. */
+.sql-grid .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.sql-null {
+    color: var(--dbm-text-dim);
+    font-style: italic;
+}
+
+.sql-results-footer {
+    flex: 0 0 auto;
+    padding: 3px 10px;
+    font-size: 0.75rem;
+    font-family: var(--bs-font-monospace);
+    color: var(--dbm-text-dim);
+    border-top: 1px solid var(--dbm-border);
+    background-color: var(--dbm-panel-solid);
+}
+/* Database backup panel: capped height so the editor below stays visible;
+   the InputFile sits inline next to its label. */
+.database-dump-panel {
+    max-height: 46vh;
+    overflow-y: auto;
+}
+
+.dbm-dump-file {
+    max-width: 24rem;
+}

@@ -1,0 +1,22 @@
+@using Microsoft.AspNetCore.Components
+<Router AppAssembly="typeof(Program).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+    <Found Context="routeData">
+        @{
+            // Full-screen pages (the vault gate at /login) render position:fixed
+            // compositions and declare their own layout via @layout. A
+            // page-transition ancestor would break them twice over: its opacity-0
+            // keyframe paints them over the bare body, and its transform turns
+            // the ancestor into a containing block that re-anchors position:fixed
+            // children. So pages carrying a LayoutAttribute skip the animation.
+            var animated = routeData.PageType.GetCustomAttributes(
+                typeof(LayoutAttribute), inherit: false).Length == 0;
+        }
+        @* @key on routeData: navigation produces a fresh RouteData, so the
+           wrapper element is rebuilt and its entry animation (app.css
+           .page-transition) replays — that is the whole page-transition trick. *@
+        <div class="@(animated ? "page-transition" : null)" @key="routeData">
+            <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
+        </div>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>

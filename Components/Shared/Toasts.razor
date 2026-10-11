@@ -1,0 +1,43 @@
+@* Tiny toast host: renders the scoped IToastService queue as stacked,
+   auto-expiring alerts top-right. Replaces the DevExpress toast of the
+   original app; the service raises Changed (from its sweep timer thread, so
+   the handler must marshal back to the renderer via InvokeAsync). *@
+@implements IDisposable
+@inject IToastService ToastSvc
+
+@if (ToastSvc.Toasts.Count > 0)
+{
+    <div class="toast-stack">
+        @foreach (var toast in ToastSvc.Toasts)
+        {
+            var t = toast; // per-iteration copy: lambdas capturing the loop variable
+            <div class="toast show @KindClass(t.Kind)" role="alert">
+                <div class="toast-header">
+                    <strong class="me-auto">@t.Title</strong>
+                    <button type="button" class="btn-close" aria-label="Close"
+                            @onclick="() => ToastSvc.Dismiss(t.Id)"></button>
+                </div>
+                <div class="toast-body">@t.Message</div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    protected override void OnInitialized()
+        => ToastSvc.Changed += OnToastsChanged;
+
+    private void OnToastsChanged()
+        // Changed may be raised from the service's sweeper thread.
+        => _ = InvokeAsync(StateHasChanged);
+
+    private static string KindClass(ToastKind kind) => kind switch
+    {
+        ToastKind.Success => "toast-success",
+        ToastKind.Warning => "toast-warning",
+        ToastKind.Info => "toast-info",
+        _ => "toast-danger"
+    };
+
+    public void Dispose() => ToastSvc.Changed -= OnToastsChanged;
+}

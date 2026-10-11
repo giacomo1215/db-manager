@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css" />
+    @* Login page identity: Space Grotesk (display/body) + IBM Plex Mono
+       (security metadata). Falls back to system-ui/monospace when offline. *@
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["DbManager.styles.css"]" />
+    <ImportMap />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    @* Pre-paint theme: applies the saved theme BEFORE first render so a dark
+       session never flashes light on reload. Keep in sync with js/site.js. *@
+    <script>document.documentElement.setAttribute('data-bs-theme', localStorage.getItem('dbm.theme') === 'dark' ? 'dark' : 'light');</script>
+    <HeadOutlet @rendermode="new InteractiveServerRenderMode(prerender: false)" />
+</head>
+
+<body>
+    <Routes @rendermode="new InteractiveServerRenderMode(prerender: false)" />
+    <ReconnectModal @rendermode="new InteractiveServerRenderMode(prerender: false)" />
+    @* Loaded before blazor.web.js so each is ready as soon as the circuit starts
+       calling it. site.js first — theme helpers are used by the layout. *@
+    <script src="js/site.js"></script>
+    @* Monaco AMD loader for the SQL editor page. Only this ~3 KB bootstrap comes
+       from the CDN; the editor engine (~2 MB) is downloaded lazily by
+       js/sql-editor.js on the first visit to the page. Pinned version — MUST
+       match require.config paths in wwwroot/js/sql-editor.js. *@
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+    <script src="js/sql-editor.js"></script>
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>

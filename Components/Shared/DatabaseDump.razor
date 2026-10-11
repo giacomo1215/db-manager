@@ -1,0 +1,311 @@
+@* Database-level backup panel (SQL Editor page): streams the connected database
+   as an engine-native .sql script (schema only, or schema + data) and imports
+   scripts back. The connection-vault BackupRestore is a separate concern. *@
+@using System.IO
+@using DbManager.Models
+@inject IDbDumpService Dump
+@inject IDbConnectorRegistry Registry
+@inject IToastService Toasts
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="card database-dump-panel">
+    <div class="card-body py-3">
+        <h6 class="card-subtitle mb-2 text-body-secondary">
+            <i class="bi bi-cloud-arrow-down me-1"></i>
+            Database backup — @EngineName (@(Profile?.EngineKey))
+        </h6>
+
+        @* -------------------------------- Export -------------------------------- *@
+        <div class="d-flex flex-wrap gap-2 mb-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary"
+                    disabled="@(_isBusy || Profile is null)" @onclick="() => ExportAsync(includeData: false)">
+                <i class="bi bi-filetype-sql me-1"></i>Schema only
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-primary"
+                    disabled="@(_isBusy || Profile is null)" @onclick="() => ExportAsync(includeData: true)">
+                <i class="bi bi-database me-1"></i>Schema + data
+            </button>
+        </div>
+        <p class="card-text text-body-secondary small mb-2">
+            The whole database is exported (object selection comes later); the
+            script uses DROP … IF EXISTS, so importing it replaces objects with
+            the same names.
+        </p>
+
+        @* -------------------------------- Import -------------------------------- *@
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-1">
+            <span class="text-body-secondary small me-1">Import script:</span>
+            @* @key forces a fresh file input after every cancel/completion. *@
+            <InputFile OnChange="OnImportFileSelectedAsync" @key="_importInputKey"
+                       accept=".sql,text/plain,.txt" class="form-control form-control-sm dbm-dump-file" />
+        </div>
+
+        @if (_isBusy && _progressText is not null)
+        {
+            <div class="small text-body-secondary d-flex align-items-center gap-2 my-2">
+                <span class="spinner-border spinner-border-sm" role="status"></span>
+                @_progressText
+            </div>
+        }
+        @if (_infoText is not null)
+        {
+            <div class="small text-body-secondary my-2">@_infoText</div>
+        }
+        @if (_pendingImport)
+        {
+            <div class="alert alert-danger d-flex flex-row align-items-center gap-2 py-2" role="alert">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <span class="flex-grow-1 small">
+                    Execute @_importStatements SQL statements against '@Profile?.Name'
+                    (@EngineName)? Objects with the same names will be dropped and replaced. Continue?
+                </span>
+                <button type="button" class="btn btn-sm btn-danger" disabled="@_isBusy" @onclick="ConfirmImportAsync">Import</button>
+                <button type="button" class="btn btn-sm btn-secondary" disabled="@_isBusy" @onclick="CancelImport">Cancel</button>
+            </div>
+        }
+        @if (_errorText is not null)
+        {
+            <div class="alert alert-danger py-2 small">@_errorText</div>
+        }
+    </div>
+</div>
+
+@code {
+    // Uploads stream through here straight to a temp file: scripts are far too
+    // big (and too risky to hold) as a single string.
+    private const long MaxScriptBytes = 512 * 1024 * 1024;
+
+    // Interop chunks ride SignalR: this stays well under its default 32 KB
+    // maximum message size.
+    private const int DownloadChunkChars = 16 * 1024;
+
+    [Parameter]
+    public ConnectionProfile? Profile { get; set; }
+
+    private bool _isBusy;
+    private string? _progressText;
+    private string? _infoText;
+    private string? _errorText;
+
+    private int _importInputKey;
+    private string _importFileName = string.Empty;
+    private string? _importTempPath;
+    private int _importStatements;
+    private bool _pendingImport;
+
+    private readonly CancellationTokenSource _cts = new();
+
+    private string EngineName => Registry.Resolve(Profile?.EngineKey ?? string.Empty)?.DisplayName ?? Profile?.EngineKey ?? string.Empty;
+
+    // ---------------- Export ----------------
+
+    private async Task ExportAsync(bool includeData)
+    {
+        if (Profile is null)
+            return;
+
+        _isBusy = true;
+        _progressText = "Exporting…";
+        _infoText = null;
+        _errorText = null;
+        StateHasChanged();
+
+        var progress = new Progress<DumpProgress>(p =>
+        {
+            _progressText = p.Stage == "Data"
+                ? $"{p.CurrentObject}: {p.RowsDone:N0} rows"
+                : $"[{p.ObjectsDone}/{p.ObjectsTotal}] {p.CurrentObject}";
+            StateHasChanged();
+        });
+
+        try
+        {
+            var options = new DumpOptions { IncludeData = includeData };
+            var result = await Task.Run(() => Dump.DumpAsync(Profile, options, progress, _cts.Token));
+            if (result.Error is not null || result.TempScriptPath is null)
+            {
+                _errorText = $"Export failed: {result.Error}";
+                Toasts.Show("Export failed", result.Error ?? "Unknown error", ToastKind.Danger);
+                return;
+            }
+
+            await DownloadScriptAsync(result.TempScriptPath, includeData);
+            File.Delete(result.TempScriptPath);
+
+            _infoText = $"{result.Tables} table(s), {result.Views} view(s), {result.Routines} routine(s), "
+                + $"{result.Indexes} index(es), {result.Rows:N0} rows — {result.ScriptBytes / 1024.0 / 1024.0:N1} MB, {result.ElapsedMs / 1000.0:N1} s.";
+            Toasts.Show("Export", "Database script downloaded.", ToastKind.Success);
+        }
+        catch (Exception ex)
+        {
+            // Never throw in the UI — an unhandled exception kills the circuit.
+            _errorText = $"Export failed: {ex.Message}";
+            Toasts.Show("Export failed", ex.Message, ToastKind.Danger);
+        }
+        finally
+        {
+            _isBusy = false;
+            _progressText = null;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>Streams the temp script to the browser in interop-sized chunks.</summary>
+    private async Task DownloadScriptAsync(string path, bool includeData)
+    {
+        var name = $"db-manager-{Profile!.EngineKey}-{(includeData ? "backup" : "schema")}-{DateTime.Now:yyyyMMdd-HHmmss}.sql";
+        await JS.InvokeVoidAsync("dbmSite.beginDownload", name, "application/sql");
+        try
+        {
+            using var reader = File.OpenText(path);
+            var buffer = new char[DownloadChunkChars];
+            int read;
+            while ((read = await reader.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                await JS.InvokeVoidAsync("dbmSite.appendDownloadChunk", new string(buffer, 0, read));
+            await JS.InvokeVoidAsync("dbmSite.finishDownload");
+        }
+        catch
+        {
+            await JS.InvokeVoidAsync("dbmSite.abortDownload");
+            throw;
+        }
+    }
+
+    // ---------------- Import ----------------
+
+    private async Task OnImportFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        ResetImport(deleteTemp: true);
+        StateHasChanged();
+
+        if (Profile is null)
+        {
+            _errorText = "Select a connection first.";
+            return;
+        }
+
+        _isBusy = true;
+        _progressText = "Reading script…";
+        StateHasChanged();
+        try
+        {
+            var file = e.File;
+            if (file.Size > MaxScriptBytes)
+            {
+                _errorText = "The script is larger than 512 MB.";
+                return;
+            }
+            _importFileName = file.Name;
+
+            // Copy the upload to a temp file: analyze/import stream it, and the
+            // browser's FileReader never materializes the whole script.
+            _importTempPath = Path.Combine(Path.GetTempPath(), $"dbm-import-{Guid.NewGuid():N}.sql");
+            using (var input = file.OpenReadStream(MaxScriptBytes))
+            await using (var output = File.Create(_importTempPath))
+            {
+                await input.CopyToAsync(output);
+            }
+
+            var preview = await Task.Run(() => Dump.AnalyzeScriptAsync(_importTempPath!, Profile, _cts.Token));
+            if (preview.Error is not null)
+            {
+                _errorText = $"Could not analyze the script: {preview.Error}";
+                DeleteImportTemp();
+                return;
+            }
+
+            _importStatements = preview.Statements;
+            _pendingImport = true;
+        }
+        catch (Exception ex)
+        {
+            _errorText = $"Could not read the script: {ex.Message}";
+            DeleteImportTemp();
+        }
+        finally
+        {
+            _isBusy = false;
+            _progressText = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ConfirmImportAsync()
+    {
+        if (Profile is null || _importTempPath is null)
+            return;
+
+        _isBusy = true;
+        _progressText = "Importing…";
+        _errorText = null;
+        StateHasChanged();
+
+        var progress = new Progress<DumpProgress>(p =>
+        {
+            _progressText = $"{p.RowsDone:N0} statements";
+            StateHasChanged();
+        });
+
+        try
+        {
+            var result = await Task.Run(() => Dump.ImportAsync(Profile, _importTempPath!, progress, _cts.Token));
+            if (result.Error is not null)
+            {
+                _errorText = result.RolledBack
+                    ? $"Import failed on statement #{result.FailedStatementIndex} (rolled back): {result.Error}"
+                    : $"Import failed on statement #{result.FailedStatementIndex} (already-applied statements stay — rerun the script): {result.Error}";
+                Toasts.Show("Import failed", result.Error, ToastKind.Danger);
+            }
+            else
+            {
+                _infoText = $"Import completed — {result.StatementsExecuted:N0} statements in {result.ElapsedMs / 1000.0:N1} s.";
+                Toasts.Show("Import", "Script imported.", ToastKind.Success);
+                ResetImport(deleteTemp: true);
+                _importInputKey++;
+            }
+        }
+        catch (Exception ex)
+        {
+            _errorText = $"Import failed: {ex.Message}";
+            Toasts.Show("Import failed", ex.Message, ToastKind.Danger);
+        }
+        finally
+        {
+            _isBusy = false;
+            _progressText = null;
+            StateHasChanged();
+        }
+    }
+
+    private void CancelImport()
+    {
+        ResetImport(deleteTemp: true);
+        _importInputKey++;
+    }
+
+    private void ResetImport(bool deleteTemp)
+    {
+        if (deleteTemp)
+            DeleteImportTemp();
+        _importFileName = string.Empty;
+        _importStatements = 0;
+        _pendingImport = false;
+        _errorText = null;
+    }
+
+    private void DeleteImportTemp()
+    {
+        if (_importTempPath is null)
+            return;
+        try { File.Delete(_importTempPath); } catch { /* best effort */ }
+        _importTempPath = null;
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+        DeleteImportTemp();
+    }
+}

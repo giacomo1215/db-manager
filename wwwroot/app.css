@@ -1,0 +1,372 @@
+/* db-manager site chrome. Everything page-specific lives in scoped CSS
+   (SqlEditor.razor.css, etc.); Bootstrap 5.3 theme switching is driven by
+   <html data-bs-theme>, set pre-paint by the inline script in App.razor.
+
+   The visual identity comes from the vault gate (Login.razor.css): a quiet
+   aurora field behind glass panels with one brass accent. --dbm-* tokens
+   carry that system across the whole app; every component styles itself
+   against the tokens so light/dark mode is one attribute flip. */
+
+/* ---------------- Type ---------------- */
+
+/* Space Grotesk is the app voice; IBM Plex Mono is the data voice (SQL,
+   ports, engine names). Bootstrap propagates both vars into every
+   component, so one :root declaration themes the whole app. */
+:root {
+    --bs-body-font-family: 'Space Grotesk', system-ui, sans-serif;
+    --bs-font-monospace: 'IBM Plex Mono', ui-monospace, monospace;
+}
+
+/* ---------------- Design tokens ---------------- */
+
+/* Dark (the login's native palette) and light (cool porcelain with the same
+   aurora hues as pastels). Brass keeps its gradient + dark ink in both. */
+
+:root,
+[data-bs-theme="light"] {
+    --dbm-bg: #eef1fa;
+    --dbm-text: #1c2440;
+    --dbm-text-dim: rgba(38, 52, 88, .62);
+    --dbm-text-faint: rgba(38, 52, 88, .42);
+
+    --dbm-glass: rgba(255, 255, 255, .58);
+    --dbm-glass-strong: rgba(255, 255, 255, .82);
+    --dbm-panel-solid: #f6f8ff;          /* opaque: sticky grid headers, footers */
+    --dbm-border: rgba(64, 86, 150, .18);
+    --dbm-border-strong: rgba(64, 86, 150, .32);
+    --dbm-shadow: 0 24px 60px -20px rgba(28, 36, 64, .25);
+
+    --dbm-accent: #f0b429;               /* brass base (the key that unlocks) */
+    --dbm-accent-bright: #ffd376;
+    --dbm-accent-ink: #241a05;           /* text sitting ON brass */
+    --dbm-accent-text: #8a5f07;          /* brass-colored text on light glass */
+    --dbm-accent-glow: rgba(240, 180, 41, .45);
+
+    --dbm-focus: #0891b2;                /* cyan focus ring */
+    --dbm-focus-ring: rgba(8, 145, 178, .18);
+
+    --dbm-ambient-opacity: .4;           /* aurora blobs behind every page */
+    --dbm-blob-opacity: .34;             /* login's own, richer field */
+    --dbm-grid-line: rgba(64, 86, 150, .07);
+}
+
+[data-bs-theme="dark"] {
+    --dbm-bg: #05070e;
+    --dbm-text: #e6ebf5;
+    --dbm-text-dim: rgba(209, 221, 247, .62);
+    --dbm-text-faint: rgba(160, 180, 230, .42);
+
+    --dbm-glass: rgba(24, 32, 58, .74);
+    --dbm-glass-strong: rgba(7, 11, 24, .6);
+    --dbm-panel-solid: #101627;
+    --dbm-border: rgba(140, 165, 255, .16);
+    --dbm-border-strong: rgba(140, 165, 255, .3);
+    --dbm-shadow: 0 24px 60px -20px rgba(0, 0, 0, .7);
+
+    --dbm-accent: #f0b429;
+    --dbm-accent-bright: #ffd376;
+    --dbm-accent-ink: #241a05;
+    --dbm-accent-text: #ffd376;
+    --dbm-accent-glow: rgba(240, 180, 41, .55);
+
+    --dbm-focus: #22d3ee;
+    --dbm-focus-ring: rgba(34, 211, 238, .14);
+
+    --dbm-ambient-opacity: .32;
+    --dbm-blob-opacity: .5;
+    --dbm-grid-line: rgba(122, 152, 255, .05);
+}
+
+/* ---------------- Ambient field ---------------- */
+
+/* The aurora lives on every page, not just the gate: html owns the base
+   color, body stays transparent so the negative-z blobs paint above the
+   canvas but below all content. Two blobs only — quiet backdrop, never a
+   third competing with the login's full composition. */
+html {
+    background-color: var(--dbm-bg);
+}
+
+body {
+    background: transparent;
+    color: var(--dbm-text);
+    transition: background-color .2s ease, color .2s ease;
+}
+
+body::before,
+body::after {
+    content: "";
+    position: fixed;
+    width: 55vmax;
+    height: 55vmax;
+    border-radius: 50%;
+    filter: blur(90px);
+    opacity: var(--dbm-ambient-opacity);
+    pointer-events: none;
+    z-index: -1;
+    will-change: transform;
+}
+
+body::before {
+    left: -14%;
+    top: -24%;
+    background: radial-gradient(circle at 35% 35%, #4e5ee6 0%, transparent 60%);
+    animation: ambient-a 46s ease-in-out infinite alternate;
+}
+
+body::after {
+    right: -18%;
+    bottom: -30%;
+    background: radial-gradient(circle at 60% 40%, #22d3ee 0%, transparent 55%);
+    animation: ambient-b 58s ease-in-out infinite alternate;
+}
+
+@keyframes ambient-a {
+    to { transform: translate(9vw, 7vh) scale(1.12); }
+}
+
+@keyframes ambient-b {
+    to { transform: translate(-8vw, -6vh) scale(.92); }
+}
+
+/* ---------------- Theme toggle icon ---------------- */
+
+/* Sun in dark mode (click = go light), moon in light mode. Pure CSS — no JS
+   bookkeeping. */
+[data-bs-theme="light"] .theme-icon-light {
+    display: none;
+}
+
+[data-bs-theme="dark"] .theme-icon-dark {
+    display: none;
+}
+
+/* ---------------- Page transition ---------------- */
+
+/* Routes.razor wraps each routed page in a div keyed on the RouteData, so
+   every navigation rebuilds the element and replays this entry — the app's
+   one orchestrated moment per navigation. */
+.page-transition {
+    animation: page-in 320ms cubic-bezier(.2, .7, .3, 1) both;
+}
+
+@keyframes page-in {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    body::before,
+    body::after,
+    .page-transition {
+        animation: none;
+    }
+}
+
+/* ---------------- Bootstrap, restyled at the root ---------------- */
+
+/* Cards: glass panels over the ambient field. Same radius family as the
+   login panel (18px there, 14px for the denser app chrome). */
+.card {
+    background: var(--dbm-glass);
+    border: 1px solid var(--dbm-border);
+    border-radius: 14px;
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+    box-shadow: var(--dbm-shadow);
+    color: inherit;
+}
+
+/* Primary action: the brass key. Gradient + glow + dark ink, exactly like
+   the login's .btn-key — the CTA vocabulary stays one voice. */
+.btn-primary {
+    background: linear-gradient(180deg, var(--dbm-accent-bright) 0%, var(--dbm-accent) 100%);
+    border: 0;
+    color: var(--dbm-accent-ink);
+    font-weight: 600;
+    box-shadow:
+        0 8px 24px -8px var(--dbm-accent-glow),
+        inset 0 1px 0 rgba(255, 255, 255, .5);
+    transition: filter .15s ease, transform .15s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
+.btn-primary:active:not(:disabled) {
+    transform: translateY(0);
+}
+
+.btn-primary:disabled {
+    opacity: .65;
+    color: var(--dbm-accent-ink);
+    background: linear-gradient(180deg, var(--dbm-accent-bright) 0%, var(--dbm-accent) 100%);
+}
+
+.btn-primary:focus-visible {
+    outline: 2px solid var(--dbm-accent-bright);
+    outline-offset: 2px;
+    box-shadow: 0 8px 24px -8px var(--dbm-accent-glow);
+}
+
+/* Brass outline for the secondary-but-primary-flavored actions (Test
+   connection, Encrypted vault copy, Schema + data). */
+.btn-outline-primary {
+    --bs-btn-color: var(--dbm-accent-text);
+    --bs-btn-border-color: var(--dbm-border-strong);
+    --bs-btn-hover-bg: var(--dbm-accent-bright);
+    --bs-btn-hover-color: var(--dbm-accent-ink);
+    --bs-btn-hover-border-color: var(--dbm-accent);
+    --bs-btn-active-bg: var(--dbm-accent);
+    --bs-btn-active-color: var(--dbm-accent-ink);
+    --bs-btn-active-border-color: var(--dbm-accent);
+    font-weight: 500;
+}
+
+/* Quiet secondaries stay Bootstrap grays — restraint: brass is spent on
+   primary actions only, so it keeps its meaning. */
+
+/* Inputs: the login's .key-input, generalized. Glass field, cyan focus. */
+.form-control,
+.form-select {
+    background-color: var(--dbm-glass-strong);
+    border: 1px solid var(--dbm-border);
+    border-radius: 11px;
+    color: var(--dbm-text);
+    transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.form-control::placeholder {
+    color: var(--dbm-text-faint);
+}
+
+.form-control:focus,
+.form-select:focus {
+    border-color: var(--dbm-focus);
+    box-shadow: 0 0 0 3px var(--dbm-focus-ring);
+    background-color: var(--dbm-glass-strong);
+    color: var(--dbm-text);
+}
+
+/* Native dropdown popups ignore the page: give options a solid theme bg so
+   they never render as transparent text on white (dark mode's classic
+   broken select). */
+.form-select option {
+    background-color: var(--dbm-panel-solid);
+    color: var(--dbm-text);
+}
+
+.form-check-input {
+    border-color: var(--dbm-border-strong);
+}
+
+.form-check-input:checked {
+    background-color: var(--dbm-accent);
+    border-color: var(--dbm-accent);
+}
+
+/* Saved-connections list: transparent items so the glass card shows
+   through; one border family. */
+.list-group {
+    --bs-list-group-bg: transparent;
+    --bs-list-group-border-color: var(--dbm-border);
+    --bs-list-group-color: var(--dbm-text);
+    --bs-list-group-action-hover-color: var(--dbm-text);
+    --bs-list-group-hover-bg: var(--dbm-glass-strong);
+}
+
+/* Headings: Space Grotesk is the body font already; tighten display
+   tracking so titles read as set, not defaulted. */
+h1, h2, h3, h4, h5, h6,
+.h1, .h2, .h3, .h4, .h5, .h6 {
+    letter-spacing: -.01em;
+}
+
+/* Alerts keep Bootstrap's semantic colors (they must read as instruments:
+   danger is danger). Only the surface goes translucent over glass. */
+.alert {
+    border-radius: 10px;
+}
+
+/* Nav tabs (SQL editor result sets): theme-aware Bootstrap, plus the brass
+   underline on the active tab so the accent threads through. */
+.nav-tabs {
+    --bs-nav-tabs-link-active-color: var(--dbm-text);
+    --bs-nav-tabs-link-active-border-color: var(--dbm-border) var(--dbm-border) var(--dbm-accent);
+}
+
+/* ---------------- Toast stack (Toasts.razor) ---------------- */
+
+.toast-stack {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 1090;
+    width: 360px;
+    max-width: calc(100vw - 2rem);
+}
+
+.toast-stack .toast {
+    margin-bottom: 0.5rem;
+    background: var(--dbm-glass);
+    border: 1px solid var(--dbm-border);
+    border-radius: 12px;
+    color: var(--dbm-text);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    box-shadow: var(--dbm-shadow);
+}
+
+.toast-stack .toast-header {
+    color: var(--dbm-text);
+    background: transparent;
+    border-bottom: 0;
+}
+
+.toast-stack .btn-close {
+    filter: none;
+}
+
+[data-bs-theme="dark"] .toast-stack .btn-close {
+    filter: invert(1) grayscale(100%) brightness(200%);
+}
+
+.toast-stack .toast-danger {
+    --bs-toast-bg: rgba(var(--bs-danger-rgb), .12);
+    border-color: var(--bs-danger);
+}
+
+.toast-stack .toast-danger .toast-header {
+    color: var(--bs-danger);
+}
+
+.toast-stack .toast-success {
+    --bs-toast-bg: rgba(var(--bs-success-rgb), .12);
+    border-color: var(--bs-success);
+}
+
+.toast-stack .toast-success .toast-header {
+    color: var(--bs-success);
+}
+
+.toast-stack .toast-warning {
+    --bs-toast-bg: rgba(var(--bs-warning-rgb), .12);
+    border-color: var(--bs-warning);
+}
+
+.toast-stack .toast-warning .toast-header {
+    color: var(--bs-warning);
+}
+
+.toast-stack .toast-info {
+    --bs-toast-bg: rgba(var(--bs-info-rgb), .12);
+    border-color: var(--bs-info);
+}
+
+.toast-stack .toast-info .toast-header {
+    color: var(--bs-info);
+}

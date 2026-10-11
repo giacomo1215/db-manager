@@ -1,0 +1,651 @@
+@page "/sql-editor"
+@using System.Data
+@using Microsoft.AspNetCore.Components.Web
+@inject ISqlEditorViewModel vm
+@inject ISessionVault SessionVault
+@inject IDbConnectorRegistry Registry
+@inject IToastService Toasts
+@inject NavigationManager Navigation
+@implements IDisposable
+
+<PageTitle>SQL Editor — db-manager</PageTitle>
+
+<div class="d-flex flex-row justify-content-between align-items-center mb-2">
+    <div class="d-flex flex-row gap-2 align-items-center">
+        <h3 class="h3 mb-0">SQL Editor</h3>
+        @* Active connection: switching swaps schema, drafts and dialect. *@
+        <select class="form-select form-select-sm w-auto" value="@_activeProfileId"
+                @onchange="OnProfileChanged" title="Active connection">
+            @foreach (var profile in SessionVault.Profiles)
+            {
+                <option value="@profile.Id">@profile.Name (@EngineName(profile.EngineKey))</option>
+            }
+        </select>
+    </div>
+    <div class="d-flex flex-row gap-2 align-items-center">
+        <span class="text-body-secondary small">F5 / Ctrl+E to run</span>
+        @* Sidebar toggle: collapses the schema browser so the editor takes the
+           full width — handy when writing long queries against known names. *@
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                title="@(_sidebarCollapsed ? "Show schema" : "Hide schema")"
+                @onclick="ToggleSidebar">
+            <i class="bi @(_sidebarCollapsed ? "bi-chevron-double-right" : "bi-chevron-double-left")"></i>
+        </button>
+        @* Database backup / schema export panel — operates on the active connection. *@
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                title="@(_showDump ? "Hide backup panel" : "Database backup & schema export")"
+                @onclick="() => _showDump = !_showDump">
+            <i class="bi bi-cloud-arrow-down"></i>
+        </button>
+        <button type="button" class="btn btn-sm btn-primary" disabled="@(_isRunning || !_editorReady)"
+                @onclick="RunButton_Click">
+            <i class="bi bi-play-fill me-1"></i>Run
+        </button>
+    </div>
+</div>
+
+@if (_showDump)
+{
+    <div class="mb-2">
+        <DatabaseDump Profile="vm.ActiveProfile" />
+    </div>
+}
+
+<div class="sql-root">
+    @* ============ SIDEBAR: schema browser ============ *@
+    @if (!_sidebarCollapsed)
+    {
+        <div id="@SidebarId" class="sql-sidebar" style="@GetSidebarStyle()">
+        @if (vm.SchemaError is { } schemaError)
+        {
+            @* Unreachable host / wrong credentials: the circuit must survive this.
+               Queries still run (their errors render in the results pane); only
+               the schema browser and autocomplete are unavailable. *@
+            <div class="p-3">
+                <div class="alert alert-danger py-2 mb-2" role="alert">
+                    <i class="bi bi-x-circle-fill me-2"></i>@schemaError
+                </div>
+                <span class="text-body-secondary small">
+                    Schema browser unavailable. Queries still run — switch to a
+                    working connection to reload the schema.
+                </span>
+            </div>
+        }
+        else if (!vm.SchemaLoaded)
+        {
+            <div class="p-3 text-body-secondary">Loading schema...</div>
+        }
+        else
+        {
+            <div class="sql-sidebar-search">
+                <input type="text" class="form-control form-control-sm" placeholder="Search objects..."
+                       @bind="searchText" @bind:event="oninput" />
+            </div>
+            @* GroupBy over the enum preserves encounter order (Table, View,
+               Procedure, Function), so groups render in a fixed order. *@
+            @foreach (var group in FilteredSchema().GroupBy(o => o.Kind))
+            {
+                <div class="sql-sidebar-group">
+                    <div class="sql-sidebar-group-title">@(group.Key switch
+                    {
+                        SchemaObjectKind.Table => "Tables",
+                        SchemaObjectKind.View => "Views",
+                        SchemaObjectKind.Procedure => "Procedures",
+                        _ => "Functions"
+                    }) (@group.Count())</div>
+                    @foreach (var obj in group)
+                    {
+                        <div class="sql-sidebar-item">
+                            <div class="sql-sidebar-row">
+                                @* Expand chevron: only tables/views have columns to show. *@
+                                @if (obj.Columns.Count > 0)
+                                {
+                                    <button type="button" class="btn btn-sm btn-link sql-expand-btn p-0"
+                                            title="Columns"
+                                            @onclick="() => ToggleExpand(obj.Name)">
+                                        <i class="bi @(IsExpanded(obj.Name) ? "bi-chevron-down" : "bi-chevron-right")"></i>
+                                    </button>
+                                }
+                                else
+                                {
+                                    <span class="sql-expand-spacer"></span>
+                                }
+                                @* Name click → insert at editor caret (dialect-quoted). *@
+                                <button type="button" class="sql-name-btn" title="Insert at cursor"
+                                        @onclick="() => InsertAtCursor(Connector.QuoteQualifiedName(obj.Name))">
+                                    @obj.Name
+                                </button>
+                                @* Quick-run button: replaces editor content and executes. *@
+                                @if (obj.Kind is SchemaObjectKind.Table or SchemaObjectKind.View)
+                                {
+                                    <button type="button" class="btn btn-sm btn-outline-secondary sql-top-btn"
+                                            title="SELECT @QuickRowsLabel"
+                                            @onclick="() => RunTop20Async(obj.Name)">
+                                        @QuickRowsLabel
+                                    </button>
+                                }
+                                else if (obj.Kind is SchemaObjectKind.Procedure)
+                                {
+                                    <button type="button" class="sql-proc-run" title="Insert CALL/EXEC stub"
+                                            @onclick="() => InsertProc(obj.Name)">
+                                        <i class="bi bi-play"></i>
+                                    </button>
+                                }
+                                else
+                                {
+                                    @* Function stub: scalar and table-valued are both
+                                       invoked through SELECT, so one generic stub covers both. *@
+                                    <button type="button" class="sql-proc-run" title="Insert function stub"
+                                            @onclick="() => InsertFunction(obj.Name)">
+                                        <i class="bi bi-braces"></i>
+                                    </button>
+                                }
+                            </div>
+                            @if (IsExpanded(obj.Name))
+                            {
+                                <div class="sql-columns">
+                                    @foreach (var col in obj.Columns)
+                                    {
+                                        <button type="button" class="sql-column-row" title="Insert at cursor"
+                                                @onclick="() => InsertAtCursor(Connector.QuoteIdentifier(col.Name))">
+                                            <span>@col.Name</span>
+                                            <span class="sql-column-type">@col.DataType</span>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+        }
+        </div>
+        @* Horizontal drag handle: resizes the sidebar (px width, clamped in JS). *@
+        <div id="@SidebarDragId" class="sql-sidebar-dragger" title="Drag to resize"></div>
+    }
+
+    @* ============ MAIN: editor + results split ============ *@
+    <div class="sql-main">
+        @* Before the first run this pane is flex:1 and fills everything; once a
+           result exists the results pane appears below and the divider becomes
+           draggable. automaticLayout:true makes Monaco track the resize. *@
+        <div class="sql-editor-pane">
+            <div id="@EditorDivId" class="sql-editor-host"></div>
+        </div>
+
+        @if (_hasRun)
+        {
+            <div id="@DividerId" class="sql-divider" title="Drag to resize"></div>
+            <div id="@ResultsDivId" class="sql-results-pane" style="@GetResultsStyle()">
+                @* ---- Pending write confirmation: inline alert, not a popup, so
+                       it lives where the results will land. ---- *@
+                @if (_pendingSql is not null)
+                {
+                    <div class="alert alert-danger d-flex flex-row align-items-center gap-2 m-0 rounded-0" role="alert">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <span class="flex-grow-1">This query modifies data or structure. Run it anyway?</span>
+                        <button type="button" class="btn btn-sm btn-danger" @onclick="ConfirmWrite_Click">Run</button>
+                        <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelWrite_Click">Cancel</button>
+                    </div>
+                }
+                else if (_result is not null)
+                {
+                    @* ---- Header: error or result-set tabs ---- *@
+                    @if (_result.Error is not null)
+                    {
+                        @* SSMS-style inline error (red text); the toast is only a heads-up. *@
+                        <div class="sql-error">
+                            <i class="bi bi-x-circle-fill me-2"></i>@_result.Error
+                        </div>
+                    }
+                    else if (_result.ResultSets.Count > 1)
+                    {
+                        @* Multiple result sets → one tab each, like SSMS result panes. *@
+                        <ul class="nav nav-tabs sql-tabs">
+                            @for (var i = 0; i < _result.ResultSets.Count; i++)
+                            {
+                                // C# `for` loops share ONE variable across all
+                                // iterations, so lambdas capturing `i` would all
+                                // see the final value (ResultSets.Count) by the
+                                // time the user clicks — every tab opened the
+                                // last result set. A per-iteration copy fixes it.
+                                var index = i;
+                                <li class="nav-item">
+                                    <button type="button" class="nav-link @(_activeTab == index ? "active" : "")"
+                                            @onclick="() => SelectTab(index)">
+                                        Result @(index + 1) (@_result.ResultSets[index].Rows.Count)
+                                    </button>
+                                </li>
+                            }
+                        </ul>
+                    }
+
+                    @* ---- Body ---- *@
+                    <div class="sql-results-body">
+                        @if (_result.Error is not null)
+                        {
+                            @* error text rendered above; body left empty on purpose *@
+                        }
+                        else if (_result.ResultSets.Count == 0)
+                        {
+                            <div class="sql-message">
+                                @if (_result.RowsAffected > 0)
+                                {
+                                    <span>@_result.RowsAffected rows affected.</span>
+                                }
+                                else
+                                {
+                                    <span>Command completed.</span>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            var table = _result.ResultSets[Math.Min(_activeTab, _result.ResultSets.Count - 1)];
+                            <table class="sql-grid">
+                                <thead>
+                                    <tr>
+                                        @foreach (DataColumn col in table.Columns)
+                                        {
+                                            <th class="@(IsNumericType(col.DataType) ? "num" : "")">@col.ColumnName</th>
+                                        }
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @* Virtualize: a quick SELECT on a big table can be
+                                       thousands of rows; only the visible slice renders. *@
+                                    <Virtualize Items="GetRows(table)" ItemSize="28" OverscanCount="5">
+                                        <tr>
+                                            @{
+                                                var row = context as DataRow;
+                                                foreach (DataColumn col in table.Columns)
+                                                {
+                                                    var value = row![col];
+                                                    <td class="@(IsNumericType(col.DataType) ? "num" : "")">
+                                                        @if (value is DBNull or null)
+                                                        {
+                                                            <em class="sql-null">NULL</em>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span title="@value.ToString()">@value</span>
+                                                        }
+                                                    </td>
+                                                }
+                                            }
+                                        </tr>
+                                    </Virtualize>
+                                </tbody>
+                            </table>
+                        }
+                    </div>
+                    <div class="sql-results-footer">
+                        Elapsed: @_result.ElapsedMs ms — Rows: @(_result.ResultSets.Count > 0
+                            ? _result.ResultSets[Math.Min(_activeTab, _result.ResultSets.Count - 1)].Rows.Count
+                            : _result.RowsAffected)
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    // Stable DOM ids: JS interop (Monaco init, split drags) looks elements up by id.
+    private const string EditorDivId = "dbm-sql-editor";
+    private const string DividerId = "dbm-sql-divider";
+    private const string ResultsDivId = "dbm-sql-results";
+    private const string SidebarId = "dbm-sql-sidebar";
+    private const string SidebarDragId = "dbm-sql-sidebar-drag";
+
+    // Set by OnEditorReady (JS callback): the Run button and query reads must not
+    // fire before Monaco exists — the AMD require() engine download is async.
+    private bool _editorReady;
+    private bool _isRunning;
+
+    // Results visibility. _splitPct mirrors the divider position so Blazor never
+    // snaps it back to 50% on a re-render while the user has dragged it.
+    private bool _hasRun;
+    private bool _splitWired;
+    private double _splitPct = 50;
+
+    // Sidebar width/collapse. The dragger element only exists while expanded, so
+    // its JS wiring must be re-created after every expand — _sidebarWired tracks
+    // whether the CURRENT dragger element has its pointer listeners attached.
+    private double _sidebarWidth = 280;
+    private bool _sidebarCollapsed;
+
+    // Database backup / schema export panel (DatabaseDump component).
+    private bool _showDump;
+    private bool _sidebarWired;
+
+    private SqlEditorResult? _result;
+    private int _activeTab;
+
+    // Non-null while the inline "write confirm" alert is shown: execution is
+    // deferred until the user presses Run (or dropped on Cancel).
+    private string? _pendingSql;
+
+    // Sidebar UI state.
+    private readonly HashSet<string> _expanded = new(StringComparer.OrdinalIgnoreCase);
+    private string searchText = string.Empty;
+
+    // Active connection id (dropdown binding, string for <select>).
+    private string _activeProfileId = string.Empty;
+
+    private DotNetObjectReference<SqlEditor>? _dotnetRef;
+
+    [Inject]
+    private IJSRuntime JS { get; set; } = default!;
+
+    [SupplyParameterFromQuery(Name = "profile")]
+    public Guid? ProfileId { get; set; }
+
+    /// <summary>Connector of the active connection (never null once the page renders).</summary>
+    private IDbConnector Connector => Registry.Resolve(vm.ActiveProfile?.EngineKey ?? "")!;
+
+    /// <summary>"TOP 20" or "LIMIT 20", whichever the dialect uses.</summary>
+    private string QuickRowsLabel =>
+        Connector.DialectConfig.TopSnippet.Contains("TOP") ? "TOP 20" : "LIMIT 20";
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Everything here needs the unlocked vault. Locked circuits go to the
+        // vault gate; unlocked-but-empty ones have nothing to edit, so they
+        // land on Connections to create a profile.
+        if (!SessionVault.IsUnlocked)
+        {
+            Navigation.NavigateTo("/login");
+            return;
+        }
+        if (SessionVault.Profiles.Count == 0)
+        {
+            Navigation.NavigateTo("/connections");
+            return;
+        }
+
+        var profile = SessionVault.GetProfile(ProfileId ?? Guid.Empty)
+            ?? SessionVault.Profiles[0];
+        _activeProfileId = profile.Id.ToString();
+
+        // One schema round trip per circuit per connection; the ViewModel caches it.
+        await vm.LoadSchemaAsync(profile);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (vm.ActiveProfile is null)
+            return; // redirected to /connections
+
+        if (firstRender)
+        {
+            // This wrapper is what receives the JS callbacks below; it is disposed
+            // with the page so JS never holds a dangling reference.
+            _dotnetRef = DotNetObjectReference.Create(this);
+
+            // Monaco init: theme matches the app's Bootstrap dark mode at load
+            // time (a mid-session theme switch reloads the page anyway). The
+            // editor draft is keyed per connection profile.
+            var isDark = await JS.InvokeAsync<string>("dbmSite.getTheme") == "dark";
+            await JS.InvokeVoidAsync("dbSqlEditor.init", EditorDivId, _dotnetRef, isDark, _activeProfileId);
+            return;
+        }
+
+        // The divider and results pane only exist in the DOM after the first run,
+        // so the drag wiring must happen then — not on first render, when
+        // getElementById would find nothing.
+        if (_hasRun && !_splitWired)
+        {
+            _splitWired = true;
+            await JS.InvokeVoidAsync("dbSqlEditor.initSplit", DividerId, ResultsDivId, _dotnetRef);
+        }
+
+        // Sidebar dragger: (re)created on every expand, so wire it whenever it
+        // is present but not yet wired.
+        if (!_sidebarCollapsed && !_sidebarWired)
+        {
+            _sidebarWired = true;
+            await JS.InvokeVoidAsync("dbSqlEditor.initSidebarSplit", SidebarDragId, SidebarId, _dotnetRef);
+        }
+    }
+
+    /// <summary>JS → C#: Monaco finished loading (the CDN engine download completed).</summary>
+    [JSInvokable]
+    public async Task OnEditorReady()
+    {
+        _editorReady = true;
+        await PushSchemaAsync();
+    }
+
+    /// <summary>
+    /// Pushes the active schema + dialect to Monaco. The serializer options MUST
+    /// match what the JS expects: camelCase property keys (obj.name / obj.kind /
+    /// obj.columns — PascalCase would make every JS lookup return undefined and
+    /// the completion provider throw) and enum values as text ("Table"/"View"/
+    /// "Procedure") so JS can compare kind strings.
+    /// </summary>
+    private async Task PushSchemaAsync()
+    {
+        if (vm.ActiveProfile is null)
+            return;
+
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+        };
+        var payload = new { vm.Schema, Dialect = Connector.DialectConfig };
+        await JS.InvokeVoidAsync("dbSqlEditor.setSchema", System.Text.Json.JsonSerializer.Serialize(payload, options));
+
+        StateHasChanged();
+    }
+
+    /// <summary>JS → C#: F5 / Ctrl+E / Ctrl+Enter pressed inside the editor.</summary>
+    [JSInvokable]
+    public Task OnRunRequested() => RunQueryAsync();
+
+    /// <summary>JS → C#: the divider drag ended; keep C# state in sync for re-renders.</summary>
+    [JSInvokable]
+    public Task OnSplitChanged(double pct)
+    {
+        _splitPct = pct;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>JS → C#: the sidebar drag ended; persist the width for re-renders.</summary>
+    [JSInvokable]
+    public Task OnSidebarSplitChanged(double px)
+    {
+        _sidebarWidth = px;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Dropdown change: switch the active connection.</summary>
+    private async Task OnProfileChanged(ChangeEventArgs e)
+    {
+        if (!Guid.TryParse(e.Value?.ToString(), out var id))
+            return;
+        if (vm.ActiveProfile?.Id == id)
+            return;
+
+        var profile = SessionVault.GetProfile(id);
+        if (profile is null)
+            return;
+
+        _activeProfileId = id.ToString();
+        // Results belong to the previous connection; drafts and schema follow.
+        _result = null;
+        _hasRun = false;
+        _activeTab = 0;
+        _pendingSql = null;
+        await JS.InvokeVoidAsync("dbSqlEditor.loadDraft", EditorDivId, _activeProfileId);
+
+        await vm.LoadSchemaAsync(profile); // switches + invalidates the cache
+        if (_editorReady)
+            await PushSchemaAsync();
+    }
+
+    /// <summary>
+    /// Header button: collapses/expands the schema sidebar. On collapse the
+    /// dragger element is destroyed (so its JS listeners must be re-created on
+    /// the next expand — see OnAfterRenderAsync/_sidebarWired).
+    /// </summary>
+    private void ToggleSidebar()
+    {
+        _sidebarCollapsed = !_sidebarCollapsed;
+        if (_sidebarCollapsed)
+            _sidebarWired = false;
+    }
+
+    private Task RunButton_Click() => RunQueryAsync();
+
+    /// <summary>
+    /// Reads the editor content and executes it — single entry point for the Run
+    /// button and the editor keybindings.
+    /// </summary>
+    private async Task RunQueryAsync()
+    {
+        if (!_editorReady || _isRunning)
+            return;
+
+        var sql = await JS.InvokeAsync<string>("dbSqlEditor.getValue", EditorDivId);
+        await ExecuteSqlAsync(sql);
+    }
+
+    /// <summary>
+    /// Sidebar quick-peek: replaces the editor content (the natural expectation
+    /// for a quick look) and runs immediately. Always a read, so no confirm dialog.
+    /// Dialect-aware: TOP for T-SQL, LIMIT for the rest, quoted per engine.
+    /// </summary>
+    private async Task RunTop20Async(string objectName)
+    {
+        if (!_editorReady || _isRunning)
+            return;
+
+        var sql = Connector.BuildSelectTopN(objectName, 20);
+        await JS.InvokeVoidAsync("dbSqlEditor.setValue", EditorDivId, sql);
+        await ExecuteSqlAsync(sql);
+    }
+
+    /// <summary>Common execution path with the write gate and run/finish bookkeeping.</summary>
+    private async Task ExecuteSqlAsync(string sql)
+    {
+        // Write gate: the IsWriteStatement heuristic only decides WHETHER the
+        // confirm alert appears; the actual execution is identical either way.
+        if (vm.IsWriteStatement(sql))
+        {
+            _pendingSql = sql;
+            _hasRun = true; // results pane becomes visible to host the confirm alert
+            StateHasChanged();
+            return;
+        }
+
+        await DoExecuteAsync(sql);
+    }
+
+    private async Task ConfirmWrite_Click()
+    {
+        var sql = _pendingSql;
+        await DoExecuteAsync(sql!);
+    }
+
+    private void CancelWrite_Click()
+    {
+        _pendingSql = null;
+        // If nothing was ever executed, collapse the results pane back — there is
+        // nothing to show and the editor should get the full height again.
+        if (_result is null)
+            _hasRun = false;
+        StateHasChanged();
+    }
+
+    private async Task DoExecuteAsync(string sql)
+    {
+        _isRunning = true;
+        _pendingSql = null;
+        StateHasChanged();
+        try
+        {
+            _result = await vm.ExecuteAsync(sql);
+            _hasRun = true;
+            _activeTab = 0;
+
+            if (_result.Error is not null)
+                ShowErrorToast(_result.Error);
+        }
+        finally
+        {
+            _isRunning = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ShowErrorToast(string message) =>
+        Toasts.Show("SQL error", message, ToastKind.Danger, 8);
+
+    private Task InsertAtCursor(string text) =>
+        JS.InvokeVoidAsync("dbSqlEditor.insertAtCursor", EditorDivId, text).AsTask();
+
+    /// <summary>Proc run icon: inserts an EXEC/CALL stub so the user fills in parameters.</summary>
+    private Task InsertProc(string procName) =>
+        InsertAtCursor(Connector.BuildExecStub(procName));
+
+    /// <summary>Function icon: inserts a SELECT stub (scalar and table-valued
+    /// functions are both invoked through SELECT, differing only in the prefix /
+    /// FROM shape — the user adjusts that around the inserted name).</summary>
+    private Task InsertFunction(string funcName) =>
+        InsertAtCursor(Connector.BuildFunctionStub(funcName));
+
+    private bool IsExpanded(string name) => _expanded.Contains(name);
+
+    private void ToggleExpand(string name)
+    {
+        if (!_expanded.Remove(name))
+            _expanded.Add(name);
+    }
+
+    private void SelectTab(int index) => _activeTab = index;
+
+    /// <summary>Sidebar filter: object name OR any column name matching (case-insensitive).</summary>
+    private IEnumerable<SchemaObject> FilteredSchema()
+    {
+        if (string.IsNullOrWhiteSpace(searchText))
+            return vm.Schema;
+
+        var term = searchText.Trim();
+        return vm.Schema.Where(o =>
+            o.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+            || o.Columns.Any(c => c.Name.Contains(term, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    private string EngineName(string engineKey) =>
+        Registry.Resolve(engineKey)?.DisplayName ?? engineKey;
+
+    /// <summary>Rows as a plain list so <c>Virtualize</c> gets an indexable collection.</summary>
+    private static List<DataRow> GetRows(DataTable table) => table.Rows.Cast<DataRow>().ToList();
+
+    /// <summary>Right-align numerics like SSMS; the column type decides the alignment.</summary>
+    private static bool IsNumericType(Type type) =>
+        type == typeof(byte) || type == typeof(sbyte) || type == typeof(short) || type == typeof(ushort)
+        || type == typeof(int) || type == typeof(uint) || type == typeof(long) || type == typeof(ulong)
+        || type == typeof(float) || type == typeof(double) || type == typeof(decimal);
+
+    /// <summary>
+    /// Inline style for the results pane: flex-basis carries the divider position.
+    /// During a drag JS updates the style directly; this only re-seeds the
+    /// C#-known value so re-renders do not undo the last drag.
+    /// </summary>
+    private string GetResultsStyle() => $"flex-basis: {_splitPct.ToString(System.Globalization.CultureInfo.InvariantCulture)}%;";
+
+    /// <summary>Inline width for the sidebar; JS updates it directly while dragging,
+    /// this re-seeds the C#-known value so re-renders keep the dragged width.</summary>
+    private string GetSidebarStyle() => $"width: {_sidebarWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)}px;";
+
+    public void Dispose()
+    {
+        // Fire-and-forget on purpose: Dispose must be sync, and at teardown the
+        // circuit is going away anyway — a missed JS call harms nothing.
+        _ = JS.InvokeVoidAsync("dbSqlEditor.dispose", EditorDivId);
+        _dotnetRef?.Dispose();
+    }
+}
