@@ -104,5 +104,13 @@ namespace DbManager.Providers
 
         public string BuildConnectionString(ConnectionFormData form) =>
             $"Data Source={ConnectorHelpers.EscapeCsValue(form.FilePath)}";
+
+        public bool SupportsServerLevel => false;
+
+        public string BuildServerConnectionString(ConnectionFormData form) =>
+            throw new System.NotSupportedException("SQLite is file-based; there is no server.");
+
+        public Task<List<string>> ListDatabasesAsync(DbConnection conn, CancellationToken ct = default) =>
+            throw new System.NotSupportedException("SQLite is file-based; there is no server.");
     }
 }

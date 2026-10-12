@@ -176,10 +176,34 @@ namespace DbManager.Providers
         public string BuildConnectionString(ConnectionFormData form)
         {
             var port = form.Port ?? DefaultPort;
+            var cs = $"Server={ConnectorHelpers.EscapeCsValue(form.Host)};Port={port};";
+            // Empty database = server-level profile: the server default DB applies.
+            if (!string.IsNullOrEmpty(form.Database))
+                cs += $"Database={ConnectorHelpers.EscapeCsValue(form.Database)};";
+            cs += $"User ID={ConnectorHelpers.EscapeCsValue(form.Username)};"
+                + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)}";
+            return cs;
+        }
+
+        public bool SupportsServerLevel => true;
+
+        public string BuildServerConnectionString(ConnectionFormData form)
+        {
+            var port = form.Port ?? DefaultPort;
             return $"Server={ConnectorHelpers.EscapeCsValue(form.Host)};Port={port};"
-                + $"Database={ConnectorHelpers.EscapeCsValue(form.Database)};"
                 + $"User ID={ConnectorHelpers.EscapeCsValue(form.Username)};"
                 + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)}";
+        }
+
+        public async Task<List<string>> ListDatabasesAsync(DbConnection conn, CancellationToken ct = default)
+        {
+            // information_schema.SCHEMATA is grant-filtered: a restricted user
+            // only sees databases they may access.
+            const string sql = @"
+                SELECT SCHEMA_NAME FROM information_schema.SCHEMATA
+                ORDER BY SCHEMA_NAME;";
+            var dbs = await conn.QueryAsync<string>(new CommandDefinition(sql, cancellationToken: ct));
+            return dbs.ToList();
         }
     }
 }

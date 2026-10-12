@@ -35,6 +35,13 @@ namespace DbManager.Abstractions
         /// </summary>
         Task LoadSchemaAsync(ConnectionProfile profile, CancellationToken ct = default);
 
+        /// <summary>
+        /// Reloads the active profile's schema even when already cached — used after
+        /// a database switch inside a server-level profile (same profile id, new
+        /// target). NEVER throws — failures land in SchemaError.
+        /// </summary>
+        Task ReloadSchemaAsync(CancellationToken ct = default);
+
         /// <summary>Executes against the active profile.</summary>
         Task<SqlEditorResult> ExecuteAsync(string sql, CancellationToken ct = default);
 

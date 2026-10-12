@@ -16,10 +16,41 @@ namespace DbManager.Models
         /// <summary>Connector engine key: "mssql", "mysql", "postgres", "sqlite".</summary>
         public string EngineKey { get; set; } = string.Empty;
 
-        /// <summary>Full connection string, credentials included. Secret at rest.</summary>
+        /// <summary>Full connection string, credentials included. Secret at rest.
+        /// For server-level profiles this always targets the currently selected database.</summary>
         public string ConnectionString { get; set; } = string.Empty;
 
+        /// <summary>True when the profile connects to the whole server rather
+        /// than one pinned database (SSMS-style, switchable in the editor).</summary>
+        public bool IsServerLevel { get; set; }
+
+        /// <summary>Database queries currently run against (server-level profiles).</summary>
+        public string SelectedDatabase { get; set; } = string.Empty;
+
+        /// <summary>Structured fields captured at creation so the connection
+        /// string can be rebuilt for any database without decomposing it.</summary>
+        public string Host { get; set; } = string.Empty;
+
+        public int? Port { get; set; }
+
+        public string Username { get; set; } = string.Empty;
+
+        public string Password { get; set; } = string.Empty;
+
         public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
+
+        /// <summary>Form fields reconstructed from the stored structured fields,
+        /// optionally overriding the target database.</summary>
+        public ConnectionFormData ToFormData(string? databaseOverride = null) => new()
+        {
+            EngineKey = EngineKey,
+            Host = Host,
+            Port = Port,
+            Username = Username,
+            Password = Password,
+            Database = databaseOverride ?? SelectedDatabase,
+            IsServerLevel = IsServerLevel
+        };
     }
 
     /// <summary>
@@ -46,6 +77,10 @@ namespace DbManager.Models
 
         /// <summary>When true, RawConnectionString is used as-is.</summary>
         public bool UseRaw { get; set; }
+
+        /// <summary>When true, the connection targets the whole server and the
+        /// database can be picked/switched later (SSMS-style).</summary>
+        public bool IsServerLevel { get; set; }
 
         public string RawConnectionString { get; set; } = string.Empty;
     }

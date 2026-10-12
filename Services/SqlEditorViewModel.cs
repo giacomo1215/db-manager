@@ -39,9 +39,26 @@ namespace DbManager.Services
             SchemaLoaded = false;
             SchemaError = null;
 
+            await LoadCoreAsync(ct);
+        }
+
+        public async Task ReloadSchemaAsync(CancellationToken ct = default)
+        {
+            if (ActiveProfile is null)
+                return;
+
+            Schema = [];
+            SchemaLoaded = false;
+            SchemaError = null;
+
+            await LoadCoreAsync(ct);
+        }
+
+        private async Task LoadCoreAsync(CancellationToken ct)
+        {
             try
             {
-                Schema = await _service.GetSchemaAsync(profile, ct);
+                Schema = await _service.GetSchemaAsync(ActiveProfile!, ct);
                 SchemaLoaded = true;
             }
             catch (Exception ex)

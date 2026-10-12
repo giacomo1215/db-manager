@@ -110,7 +110,7 @@
                         </div>
                         <div class="col-12 col-md-6">
                             <label class="form-label">Engine</label>
-                            <select class="form-select" @bind="_form.EngineKey">
+                            <select class="form-select" value="@_form.EngineKey" @onchange="OnEngineChanged">
                                 @foreach (var connector in Registry.Connectors)
                                 {
                                     <option value="@connector.EngineKey">@connector.DisplayName</option>
@@ -141,7 +141,27 @@
                             </div>
                             <div class="col-6 col-md-3">
                                 <label class="form-label">Database</label>
-                                <input type="text" class="form-control" @bind="_form.Database" />
+                                @if (_serverDatabases is null)
+                                {
+                                    <div class="input-group">
+                                        <input type="text" class="form-control" @bind="_form.Database" />
+                                        <button type="button" class="btn btn-outline-secondary"
+                                                title="Load the database list from the server"
+                                                disabled="@_loadingDbs" @onclick="LoadDatabasesAsync">
+                                            <i class="bi bi-list-ul"></i>
+                                        </button>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <select class="form-select" @bind="_form.Database">
+                                        <option value="">(none — pick later)</option>
+                                        @foreach (var db in _serverDatabases)
+                                        {
+                                            <option value="@db">@db</option>
+                                        }
+                                    </select>
+                                }
                             </div>
                             <div class="col-12 col-md-6">
                                 <label class="form-label">User</label>
@@ -151,6 +171,16 @@
                                 <label class="form-label">Password</label>
                                 <input type="password" class="form-control" @bind="_form.Password" />
                             </div>
+                        </div>
+                    }
+
+                    @if (!_form.UseRaw && SelectedConnector?.SupportsServerLevel == true)
+                    {
+                        <div class="form-check mb-3">
+                            <input type="checkbox" class="form-check-input" id="serverLevel" @bind="_form.IsServerLevel" />
+                            <label class="form-check-label" for="serverLevel">
+                                Connect to the whole server (pick a database later, SSMS-style)
+                            </label>
                         </div>
                     }
 
@@ -206,6 +236,11 @@
     private bool _testing;
     private string? _formError;
     private ConnectionFormData _form = new();
+
+    // Database list loaded via "Load databases" — null until then (text input),
+    // after which the Database field becomes a select. Cleared on engine change.
+    private List<string>? _serverDatabases;
+    private bool _loadingDbs;
 
     private IDbConnector? SelectedConnector => Registry.Resolve(_form.EngineKey);
 
@@ -270,19 +305,40 @@
 
     // ---------------- Profile CRUD ----------------
 
+    private void OnEngineChanged(ChangeEventArgs e)
+    {
+        _form.EngineKey = e.Value?.ToString() ?? "sqlite";
+        // The loaded list belongs to the previously selected engine's server.
+        _serverDatabases = null;
+    }
+
     private void StartEdit(ConnectionProfile profile)
     {
         _editingId = profile.Id;
         _profileName = profile.Name;
-        _form = new ConnectionFormData
+
+        if (!string.IsNullOrEmpty(profile.Host))
         {
-            EngineKey = profile.EngineKey,
-            // Connection strings cannot be reliably decomposed back into fields,
-            // so editing an existing profile always exposes the raw string.
-            UseRaw = true,
-            RawConnectionString = profile.ConnectionString
-        };
-        _portText = string.Empty;
+            // Structured fields were persisted with the profile, so the form can
+            // be rebuilt instead of falling back to raw-string editing.
+            _form = profile.ToFormData();
+            _form.UseRaw = false;
+        }
+        else
+        {
+            _form = new ConnectionFormData
+            {
+                EngineKey = profile.EngineKey,
+                // Connection strings cannot be reliably decomposed back into fields:
+                // profiles saved before structured fields existed (or raw saves)
+                // expose the raw string for editing.
+                UseRaw = true,
+                RawConnectionString = profile.ConnectionString
+            };
+        }
+
+        _portText = _form.Port?.ToString() ?? string.Empty;
+        _serverDatabases = null;
         _formError = null;
     }
 
@@ -292,6 +348,7 @@
         _profileName = string.Empty;
         _form = new ConnectionFormData();
         _portText = string.Empty;
+        _serverDatabases = null;
         _formError = null;
     }
 
@@ -315,18 +372,71 @@
             return ("Host is required.", string.Empty);
 
         // Port is optional: the connector falls back to its default.
-        if (!string.IsNullOrWhiteSpace(_portText))
-        {
-            if (!int.TryParse(_portText.Trim(), out var port) || port is < 1 or > 65535)
-                return ("Port must be a number between 1 and 65535.", string.Empty);
-            _form.Port = port;
-        }
-        else
-        {
-            _form.Port = null;
-        }
+        var portError = TryApplyPort();
+        if (portError is not null)
+            return (portError, string.Empty);
 
         return (null, connector.BuildConnectionString(_form));
+    }
+
+    /// <summary>Parses the port text box into _form.Port; null when valid.</summary>
+    private string? TryApplyPort()
+    {
+        if (string.IsNullOrWhiteSpace(_portText))
+        {
+            _form.Port = null;
+            return null;
+        }
+
+        if (!int.TryParse(_portText.Trim(), out var port) || port is < 1 or > 65535)
+            return "Port must be a number between 1 and 65535.";
+        _form.Port = port;
+        return null;
+    }
+
+    private async Task LoadDatabasesAsync()
+    {
+        _formError = null;
+        var connector = SelectedConnector;
+        if (connector is null || !connector.SupportsServerLevel)
+            return;
+
+        if (string.IsNullOrWhiteSpace(_form.Host))
+        {
+            _formError = "Host is required.";
+            StateHasChanged();
+            return;
+        }
+
+        var portError = TryApplyPort();
+        if (portError is not null)
+        {
+            _formError = portError;
+            StateHasChanged();
+            return;
+        }
+
+        _loadingDbs = true;
+        StateHasChanged();
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await using var conn = connector.CreateConnection(connector.BuildServerConnectionString(_form));
+            await conn.OpenAsync(cts.Token);
+            var dbs = await connector.ListDatabasesAsync(conn, cts.Token);
+            _serverDatabases = dbs;
+            if (dbs.Count == 0)
+                Toasts.Show("Databases", "No databases are visible to this user.", ToastKind.Warning);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Could not load databases", ex.Message, ToastKind.Danger);
+        }
+        finally
+        {
+            _loadingDbs = false;
+            StateHasChanged();
+        }
     }
 
     private async Task TestConnectionAsync()
@@ -386,15 +496,18 @@
             existing.Name = _profileName.Trim();
             existing.EngineKey = _form.EngineKey;
             existing.ConnectionString = cs;
+            ApplyStructuredFields(existing);
         }
         else
         {
-            profiles.Add(new ConnectionProfile
+            var profile = new ConnectionProfile
             {
                 Name = _profileName.Trim(),
                 EngineKey = _form.EngineKey,
                 ConnectionString = cs
-            });
+            };
+            ApplyStructuredFields(profile);
+            profiles.Add(profile);
         }
 
         try
@@ -412,6 +525,32 @@
 
         ResetForm();
         StateHasChanged();
+    }
+
+    /// <summary>
+    /// Persists the structured form fields so the connection string can later be
+    /// rebuilt for another database (server-level switching). Raw saves keep them
+    /// empty — a raw string cannot be decomposed back into fields.
+    /// </summary>
+    private void ApplyStructuredFields(ConnectionProfile profile)
+    {
+        if (_form.UseRaw)
+        {
+            profile.IsServerLevel = false;
+            profile.Host = string.Empty;
+            profile.Port = null;
+            profile.Username = string.Empty;
+            profile.Password = string.Empty;
+            profile.SelectedDatabase = string.Empty;
+            return;
+        }
+
+        profile.IsServerLevel = _form.IsServerLevel;
+        profile.Host = _form.Host.Trim();
+        profile.Port = _form.Port;
+        profile.Username = _form.Username;
+        profile.Password = _form.Password;
+        profile.SelectedDatabase = _form.Database;
     }
 
     private void DeleteProfile(ConnectionProfile profile)

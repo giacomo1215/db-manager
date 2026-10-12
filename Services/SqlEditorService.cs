@@ -54,6 +54,15 @@ namespace DbManager.Services
         }
 
         /// <inheritdoc />
+        public async Task<List<string>> ListDatabasesAsync(ConnectionProfile profile, CancellationToken ct = default)
+        {
+            var connector = ResolveConnector(profile);
+            await using var conn = connector.CreateConnection(connector.BuildServerConnectionString(profile.ToFormData()));
+            await conn.OpenAsync(ct);
+            return await connector.ListDatabasesAsync(conn, ct);
+        }
+
+        /// <inheritdoc />
         public async Task<SqlEditorResult> ExecuteAsync(ConnectionProfile profile, string sql, CancellationToken ct = default)
         {
             var result = new SqlEditorResult();

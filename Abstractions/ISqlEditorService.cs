@@ -15,6 +15,9 @@ namespace DbManager.Abstractions
         /// <summary>Lists the objects of the profile's database, via its engine connector.</summary>
         Task<List<SchemaObject>> GetSchemaAsync(ConnectionProfile profile, CancellationToken ct = default);
 
+        /// <summary>Lists databases visible on the server of a server-level profile.</summary>
+        Task<List<string>> ListDatabasesAsync(ConnectionProfile profile, CancellationToken ct = default);
+
         /// <summary>Executes the script (possibly multiple batches) against the profile.</summary>
         Task<SqlEditorResult> ExecuteAsync(ConnectionProfile profile, string sql, CancellationToken ct = default);
 

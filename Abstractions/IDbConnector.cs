@@ -69,5 +69,16 @@ namespace DbManager.Abstractions
 
         /// <summary>Composes the structured form fields into a full connection string.</summary>
         string BuildConnectionString(ConnectionFormData form);
+
+        /// <summary>True when the engine supports connecting without a pinned
+        /// database (server-level profiles and the database picker). False for SQLite.</summary>
+        bool SupportsServerLevel { get; }
+
+        /// <summary>Connection string for server-level operations (listing
+        /// databases): no pinned database, or the engine's maintenance database.</summary>
+        string BuildServerConnectionString(ConnectionFormData form);
+
+        /// <summary>Lists database names visible to the current user on the server.</summary>
+        Task<List<string>> ListDatabasesAsync(DbConnection conn, CancellationToken ct = default);
     }
 }

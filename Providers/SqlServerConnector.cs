@@ -173,11 +173,38 @@ namespace DbManager.Providers
             var port = form.Port ?? DefaultPort;
             // TrustServerCertificate keeps quick-connect working against servers
             // with self-signed certificates — the common case for internal boxes.
+            var cs = $"Server={ConnectorHelpers.EscapeCsValue(form.Host)},{port};";
+            // Empty database = server-level profile with nothing picked yet:
+            // omitting the segment lands on the login's default (master), like SSMS.
+            if (!string.IsNullOrEmpty(form.Database))
+                cs += $"Database={ConnectorHelpers.EscapeCsValue(form.Database)};";
+            cs += $"User Id={ConnectorHelpers.EscapeCsValue(form.Username)};"
+                + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)};"
+                + "Encrypt=True;TrustServerCertificate=True";
+            return cs;
+        }
+
+        public bool SupportsServerLevel => true;
+
+        public string BuildServerConnectionString(ConnectionFormData form)
+        {
+            var port = form.Port ?? DefaultPort;
             return $"Server={ConnectorHelpers.EscapeCsValue(form.Host)},{port};"
-                + $"Database={ConnectorHelpers.EscapeCsValue(form.Database)};"
                 + $"User Id={ConnectorHelpers.EscapeCsValue(form.Username)};"
                 + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)};"
                 + "Encrypt=True;TrustServerCertificate=True";
+        }
+
+        public async Task<List<string>> ListDatabasesAsync(DbConnection conn, CancellationToken ct = default)
+        {
+            // state = 0: ONLINE only; HAS_DBACCESS hides databases the login
+            // has no entry in (SSMS shows the same filtered list).
+            const string sql = @"
+                SELECT name FROM sys.databases
+                WHERE state = 0 AND HAS_DBACCESS(name) = 1
+                ORDER BY name;";
+            var dbs = await conn.QueryAsync<string>(new CommandDefinition(sql, cancellationToken: ct));
+            return dbs.ToList();
         }
     }
 }

@@ -193,10 +193,35 @@ namespace DbManager.Providers
         public string BuildConnectionString(ConnectionFormData form)
         {
             var port = form.Port ?? DefaultPort;
+            // Npgsql requires a database: server-level profiles with nothing
+            // picked yet land on the postgres maintenance database.
+            var database = string.IsNullOrEmpty(form.Database) ? "postgres" : form.Database;
             return $"Host={ConnectorHelpers.EscapeCsValue(form.Host)};Port={port};"
-                + $"Database={ConnectorHelpers.EscapeCsValue(form.Database)};"
+                + $"Database={ConnectorHelpers.EscapeCsValue(database)};"
                 + $"Username={ConnectorHelpers.EscapeCsValue(form.Username)};"
                 + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)}";
+        }
+
+        public bool SupportsServerLevel => true;
+
+        public string BuildServerConnectionString(ConnectionFormData form)
+        {
+            var port = form.Port ?? DefaultPort;
+            return $"Host={ConnectorHelpers.EscapeCsValue(form.Host)};Port={port};"
+                + $"Database=postgres;"
+                + $"Username={ConnectorHelpers.EscapeCsValue(form.Username)};"
+                + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)}";
+        }
+
+        public async Task<List<string>> ListDatabasesAsync(DbConnection conn, CancellationToken ct = default)
+        {
+            // datallowconn excludes template0 and other non-connectable rows.
+            const string sql = @"
+                SELECT datname FROM pg_database
+                WHERE datallowconn
+                ORDER BY datname;";
+            var dbs = await conn.QueryAsync<string>(new CommandDefinition(sql, cancellationToken: ct));
+            return dbs.ToList();
         }
     }
 }

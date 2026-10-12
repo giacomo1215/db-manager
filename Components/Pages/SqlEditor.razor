@@ -2,6 +2,7 @@
 @using System.Data
 @using Microsoft.AspNetCore.Components.Web
 @inject ISqlEditorViewModel vm
+@inject ISqlEditorService EditorService
 @inject ISessionVault SessionVault
 @inject IDbConnectorRegistry Registry
 @inject IToastService Toasts
@@ -21,6 +22,22 @@
                 <option value="@profile.Id">@profile.Name (@EngineName(profile.EngineKey))</option>
             }
         </select>
+        @* Server-level connections: database picker, SSMS-style. Switching
+           re-targets queries, reloads the schema and persists the choice. *@
+        @if (vm.ActiveProfile is { IsServerLevel: true })
+        {
+            <select class="form-select form-select-sm w-auto" value="@vm.ActiveProfile.SelectedDatabase"
+                    @onchange="OnDatabaseChanged" title="Database">
+                @if (string.IsNullOrEmpty(vm.ActiveProfile.SelectedDatabase))
+                {
+                    <option value="">(default)</option>
+                }
+                @foreach (var db in _databases)
+                {
+                    <option value="@db">@db</option>
+                }
+            </select>
+        }
     </div>
     <div class="d-flex flex-row gap-2 align-items-center">
         <span class="text-body-secondary small">F5 / Ctrl+E to run</span>
@@ -333,6 +350,9 @@
     // Active connection id (dropdown binding, string for <select>).
     private string _activeProfileId = string.Empty;
 
+    // Databases of the active server-level connection (empty otherwise).
+    private List<string> _databases = [];
+
     private DotNetObjectReference<SqlEditor>? _dotnetRef;
 
     [Inject]
@@ -370,6 +390,7 @@
 
         // One schema round trip per circuit per connection; the ViewModel caches it.
         await vm.LoadSchemaAsync(profile);
+        await RefreshDatabasesAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -481,8 +502,80 @@
         await JS.InvokeVoidAsync("dbSqlEditor.loadDraft", EditorDivId, _activeProfileId);
 
         await vm.LoadSchemaAsync(profile); // switches + invalidates the cache
+        await RefreshDatabasesAsync();
         if (_editorReady)
             await PushSchemaAsync();
+    }
+
+    /// <summary>
+    /// Database dropdown change on a server-level connection: re-targets the
+    /// connection string (all later GO batches/queries follow), persists the
+    /// choice and reloads the schema. Ignored mid-run so one script's batches
+    /// never straddle two databases.
+    /// </summary>
+    private async Task OnDatabaseChanged(ChangeEventArgs e)
+    {
+        var db = e.Value?.ToString();
+        var profile = vm.ActiveProfile;
+        if (profile is null || db is null || _isRunning)
+            return;
+        if (db == profile.SelectedDatabase)
+            return;
+
+        profile.SelectedDatabase = db;
+        // The connection string is the ONLY thing execution reads — rebuilding
+        // it here re-targets every future connection (per GO batch included).
+        profile.ConnectionString = Connector.BuildConnectionString(profile.ToFormData());
+
+        try
+        {
+            SessionVault.SaveProfiles(SessionVault.Profiles.ToList());
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Vault error", $"Database selection not saved: {ex.Message}", ToastKind.Danger);
+        }
+
+        // Results belong to the previous database.
+        _result = null;
+        _hasRun = false;
+        _activeTab = 0;
+        _pendingSql = null;
+
+        await vm.ReloadSchemaAsync();
+        await RefreshDatabasesAsync();
+        if (_editorReady)
+            await PushSchemaAsync();
+    }
+
+    /// <summary>
+    /// Loads the server's database list for a server-level connection. Never
+    /// throws (server down, lost grant): the last list is kept so the dropdown
+    /// stays usable, and the selected database is always offered even when the
+    /// fresh list no longer contains it.
+    /// </summary>
+    private async Task RefreshDatabasesAsync()
+    {
+        if (vm.ActiveProfile is not { IsServerLevel: true } profile)
+        {
+            _databases = [];
+            return;
+        }
+
+        try
+        {
+            _databases = await EditorService.ListDatabasesAsync(profile);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Could not load databases", ex.Message, ToastKind.Danger);
+        }
+
+        if (!string.IsNullOrEmpty(profile.SelectedDatabase)
+            && !_databases.Contains(profile.SelectedDatabase, StringComparer.Ordinal))
+        {
+            _databases = [profile.SelectedDatabase, .. _databases];
+        }
     }
 
     /// <summary>
