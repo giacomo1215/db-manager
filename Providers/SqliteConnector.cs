@@ -107,6 +107,8 @@ namespace DbManager.Providers
 
         public bool SupportsServerLevel => false;
 
+        public bool SupportsCrossDatabaseQueries => false;
+
         public string BuildServerConnectionString(ConnectionFormData form) =>
             throw new System.NotSupportedException("SQLite is file-based; there is no server.");
 

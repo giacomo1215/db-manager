@@ -114,6 +114,12 @@
     background-color: var(--dbm-glass-strong);
 }
 
+/* Active database in the sidebar's database list. */
+.sql-name-btn.active {
+    background-color: var(--dbm-glass-strong);
+    color: var(--dbm-accent-bright);
+}
+
 .sql-top-btn {
     flex: 0 0 auto;
     font-size: 0.65rem;

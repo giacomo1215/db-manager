@@ -27,6 +27,10 @@ namespace DbManager.Services
 
         public string? SchemaError { get; private set; }
 
+        public List<DatabaseSchema> ServerSchema { get; private set; } = [];
+
+        public bool ServerSchemaLoaded { get; private set; }
+
         public async Task LoadSchemaAsync(ConnectionProfile profile, CancellationToken ct = default)
         {
             // Switching profiles invalidates the cache first; re-loading the same
@@ -38,8 +42,39 @@ namespace DbManager.Services
             Schema = [];
             SchemaLoaded = false;
             SchemaError = null;
+            // Cross-DB IntelliSense belongs to the server of THIS profile; the
+            // eager reload is triggered by the page.
+            ServerSchema = [];
+            ServerSchemaLoaded = false;
 
             await LoadCoreAsync(ct);
+        }
+
+        public async Task LoadServerSchemaAsync(ConnectionProfile profile, CancellationToken ct = default)
+        {
+            // Same profile already loaded → no-op (circuit reconnection re-runs
+            // OnInitializedAsync); a different profile is not this method's job.
+            if (ActiveProfile?.Id != profile.Id || ServerSchemaLoaded)
+                return;
+
+            try
+            {
+                var schema = await _service.GetServerSchemaAsync(profile, ct);
+                // Stale-write guard: a profile switch while the load was in
+                // flight must not install the old server's schema
+                // (LoadSchemaAsync already reset the state).
+                if (ActiveProfile?.Id != profile.Id)
+                    return;
+                ServerSchema = schema;
+                ServerSchemaLoaded = true;
+            }
+            catch
+            {
+                // Never-throw, and no separate error surface: the underlying
+                // failure is an unreachable server, which the active-schema load
+                // already reports through SchemaError. Cross-DB IntelliSense
+                // just stays unavailable.
+            }
         }
 
         public async Task ReloadSchemaAsync(CancellationToken ct = default)

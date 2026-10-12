@@ -187,6 +187,8 @@ namespace DbManager.Providers
 
         public bool SupportsServerLevel => true;
 
+        public bool SupportsCrossDatabaseQueries => true;
+
         public string BuildServerConnectionString(ConnectionFormData form)
         {
             var port = form.Port ?? DefaultPort;

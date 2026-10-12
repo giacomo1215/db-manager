@@ -65,18 +65,24 @@ namespace DbManager.Providers
                 FROM INFORMATION_SCHEMA.COLUMNS
                 ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION;";
             const string procsSql = @"
-                SELECT name FROM sys.procedures ORDER BY name;";
+                SELECT s.name AS SchemaName, p.name AS Name
+                FROM sys.procedures p
+                JOIN sys.schemas s ON p.schema_id = s.schema_id
+                ORDER BY p.name;";
             // Functions: FN = scalar, IF = inline table-valued, TF = table-valued,
             // AF = aggregate (rare, e.g. CLR). Names and parameters are separate
             // queries so a parameterless function still shows up (an INNER JOIN
             // on sys.parameters would drop it).
             const string funcsSql = @"
-                SELECT name FROM sys.objects
-                WHERE type IN ('FN', 'IF', 'TF', 'AF')
-                ORDER BY name;";
-            const string funcParamsSql = @"
-                SELECT o.name AS FuncName, p.name AS ParamName, t.name AS DataType
+                SELECT s.name AS SchemaName, o.name AS Name
                 FROM sys.objects o
+                JOIN sys.schemas s ON o.schema_id = s.schema_id
+                WHERE o.type IN ('FN', 'IF', 'TF', 'AF')
+                ORDER BY o.name;";
+            const string funcParamsSql = @"
+                SELECT s.name AS SchemaName, o.name AS FuncName, p.name AS ParamName, t.name AS DataType
+                FROM sys.objects o
+                JOIN sys.schemas s ON o.schema_id = s.schema_id
                 JOIN sys.parameters p ON p.object_id = o.object_id
                 JOIN sys.types t ON t.user_type_id = p.user_type_id
                 WHERE o.type IN ('FN', 'IF', 'TF', 'AF')
@@ -87,9 +93,9 @@ namespace DbManager.Providers
             // inline without dedicated model classes.
             var tables = await conn.QueryAsync<(string Schema, string Name, string Type)>(new CommandDefinition(tablesSql, cancellationToken: ct));
             var columns = await conn.QueryAsync<(string Schema, string Table, string Column, string DataType)>(new CommandDefinition(columnsSql, cancellationToken: ct));
-            var procs = await conn.QueryAsync<string>(new CommandDefinition(procsSql, cancellationToken: ct));
-            var funcs = await conn.QueryAsync<string>(new CommandDefinition(funcsSql, cancellationToken: ct));
-            var funcParams = await conn.QueryAsync<(string Func, string Param, string DataType)>(new CommandDefinition(funcParamsSql, cancellationToken: ct));
+            var procs = await conn.QueryAsync<(string Schema, string Name)>(new CommandDefinition(procsSql, cancellationToken: ct));
+            var funcs = await conn.QueryAsync<(string Schema, string Name)>(new CommandDefinition(funcsSql, cancellationToken: ct));
+            var funcParams = await conn.QueryAsync<(string Schema, string Func, string Param, string DataType)>(new CommandDefinition(funcParamsSql, cancellationToken: ct));
 
             // Columns grouped per table in one pass; the dictionary key is the
             // same qualified name assigned to the objects below.
@@ -120,10 +126,12 @@ namespace DbManager.Providers
             }
 
             // Stored procedures have no entries in INFORMATION_SCHEMA.COLUMNS.
+            // Name/Schema come from sys.schemas so non-dbo routines get the
+            // same qualified-name treatment as non-dbo tables.
             schema.AddRange(procs.Select(p => new SchemaObject
             {
-                Name = p,
-                Schema = "dbo",
+                Name = Qualify(p.Schema, p.Name),
+                Schema = p.Schema,
                 Kind = SchemaObjectKind.Procedure,
                 Columns = []
             }));
@@ -132,7 +140,7 @@ namespace DbManager.Providers
             // as table columns — SchemaColumn is reused (name + type is all the
             // sidebar and IntelliSense need).
             var paramsByFunc = funcParams
-                .GroupBy(p => p.Func)
+                .GroupBy(p => Qualify(p.Schema, p.Func))
                 .ToDictionary(g => g.Key, g => g.Select(p => new SchemaColumn
                 {
                     Name = p.Param,
@@ -141,10 +149,10 @@ namespace DbManager.Providers
 
             schema.AddRange(funcs.Select(f => new SchemaObject
             {
-                Name = f,
-                Schema = "dbo",
+                Name = Qualify(f.Schema, f.Name),
+                Schema = f.Schema,
                 Kind = SchemaObjectKind.Function,
-                Columns = paramsByFunc.TryGetValue(f, out var ps) ? ps : []
+                Columns = paramsByFunc.TryGetValue(Qualify(f.Schema, f.Name), out var ps) ? ps : []
             }));
 
             return schema;
@@ -185,6 +193,8 @@ namespace DbManager.Providers
         }
 
         public bool SupportsServerLevel => true;
+
+        public bool SupportsCrossDatabaseQueries => true;
 
         public string BuildServerConnectionString(ConnectionFormData form)
         {

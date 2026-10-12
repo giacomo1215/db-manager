@@ -29,6 +29,15 @@ namespace DbManager.Abstractions
         string? SchemaError { get; }
 
         /// <summary>
+        /// Schemas of every database of the active server-level profile (mssql/
+        /// mysql only), for cross-database IntelliSense. Empty for everything
+        /// else or before the load finishes.
+        /// </summary>
+        List<DatabaseSchema> ServerSchema { get; }
+
+        bool ServerSchemaLoaded { get; }
+
+        /// <summary>
         /// Loads (and caches) the schema of the given profile. Passing the profile
         /// that is already active is a no-op; passing a different one switches and
         /// invalidates the cache first. NEVER throws — failures land in SchemaError.
@@ -41,6 +50,14 @@ namespace DbManager.Abstractions
         /// target). NEVER throws — failures land in SchemaError.
         /// </summary>
         Task ReloadSchemaAsync(CancellationToken ct = default);
+
+        /// <summary>
+        /// Eager-loads every database's schema once per profile (server-level
+        /// mssql/mysql only — the page guards the call). No-op when the profile is
+        /// already active and loaded; cleared by LoadSchemaAsync on profile switch.
+        /// NEVER throws.
+        /// </summary>
+        Task LoadServerSchemaAsync(ConnectionProfile profile, CancellationToken ct = default);
 
         /// <summary>Executes against the active profile.</summary>
         Task<SqlEditorResult> ExecuteAsync(string sql, CancellationToken ct = default);

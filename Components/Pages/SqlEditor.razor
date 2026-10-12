@@ -73,6 +73,29 @@
     @if (!_sidebarCollapsed)
     {
         <div id="@SidebarId" class="sql-sidebar" style="@GetSidebarStyle()">
+        @* Server-level connections: database switcher — same targets as the
+           header dropdown. Clicking switches the active database; the schema
+           groups below follow. *@
+        @if (vm.ActiveProfile is { IsServerLevel: true })
+        {
+            <div class="sql-sidebar-group">
+                <div class="sql-sidebar-group-title">Databases (@_databases.Count)</div>
+                @foreach (var db in _databases)
+                {
+                    var isActive = db == vm.ActiveProfile.SelectedDatabase;
+                    <div class="sql-sidebar-item">
+                        <div class="sql-sidebar-row">
+                            <span class="sql-expand-spacer"></span>
+                            <button type="button" class="sql-name-btn @(isActive ? "active" : "")"
+                                    title="@(isActive ? "Active database" : "Switch to this database")"
+                                    @onclick="() => SwitchDatabaseAsync(db)">
+                                <i class="bi bi-database me-2"></i>@db
+                            </button>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
         @if (vm.SchemaError is { } schemaError)
         {
             @* Unreachable host / wrong credentials: the circuit must survive this.
@@ -391,6 +414,15 @@
         // One schema round trip per circuit per connection; the ViewModel caches it.
         await vm.LoadSchemaAsync(profile);
         await RefreshDatabasesAsync();
+
+        // Cross-database IntelliSense: eagerly load every database's schema for
+        // server-level connections whose engine can query across databases.
+        if (profile is { IsServerLevel: true } && Connector.SupportsCrossDatabaseQueries)
+        {
+            await vm.LoadServerSchemaAsync(profile);
+            if (_editorReady)
+                await PushSchemaAsync(); // Monaco arrived before the payload: re-push
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -455,7 +487,7 @@
             PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
             Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
         };
-        var payload = new { vm.Schema, Dialect = Connector.DialectConfig };
+        var payload = new { vm.Schema, Dialect = Connector.DialectConfig, Databases = vm.ServerSchema };
         await JS.InvokeVoidAsync("dbSqlEditor.setSchema", System.Text.Json.JsonSerializer.Serialize(payload, options));
 
         StateHasChanged();
@@ -503,6 +535,11 @@
 
         await vm.LoadSchemaAsync(profile); // switches + invalidates the cache
         await RefreshDatabasesAsync();
+
+        // Cross-DB IntelliSense for the newly selected server-level profile.
+        if (profile is { IsServerLevel: true } && Connector.SupportsCrossDatabaseQueries)
+            await vm.LoadServerSchemaAsync(profile);
+
         if (_editorReady)
             await PushSchemaAsync();
     }
@@ -513,9 +550,18 @@
     /// choice and reloads the schema. Ignored mid-run so one script's batches
     /// never straddle two databases.
     /// </summary>
-    private async Task OnDatabaseChanged(ChangeEventArgs e)
+    private Task OnDatabaseChanged(ChangeEventArgs e) =>
+        SwitchDatabaseAsync(e.Value?.ToString());
+
+    /// <summary>
+    /// Switches the active database of a server-level connection — the header
+    /// dropdown and the sidebar database list both land here. Re-targets the
+    /// connection string (all later GO batches/queries follow), persists the
+    /// choice and reloads the schema. Ignored mid-run so one script's batches
+    /// never straddle two databases.
+    /// </summary>
+    private async Task SwitchDatabaseAsync(string? db)
     {
-        var db = e.Value?.ToString();
         var profile = vm.ActiveProfile;
         if (profile is null || db is null || _isRunning)
             return;

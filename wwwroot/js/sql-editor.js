@@ -80,6 +80,23 @@ window.dbSqlEditor = (() => {
     // Lowercased object name -> schema object. Rebuilt on every setSchema.
     const tableIndex = new Map();
 
+    // Cross-database index for server-level connections (MSSQL three-part,
+    // MySQL two-part names): lowercased db name ->
+    // { name, threePart, schemaNames: [schema, ...],
+    //   schemas: Map(schemaLower -> Map(bareLower -> obj)),
+    //   objects: Map(bareLower -> obj) }
+    // threePart is derived from the data (MSSQL objects carry `schema`,
+    // MySQL never does) — no extra dialect contract needed. Empty for
+    // non-server-level profiles and engines that cannot query across databases.
+    const serverIndex = new Map();
+
+    // Bare (last-segment) name of a possibly schema-qualified object:
+    // "sales.orders" -> "orders", "orders" -> "orders".
+    function bareName(obj) {
+        const i = obj.name.lastIndexOf('.');
+        return i === -1 ? obj.name : obj.name.slice(i + 1);
+    }
+
     // Words that can follow "FROM <table>" WITHOUT being an alias. Needed so
     // "FROM Products WHERE" does not register "WHERE" as alias "where".
     const SQL_STOPWORDS = new Set([
@@ -91,38 +108,66 @@ window.dbSqlEditor = (() => {
         'offset', 'fetch'
     ]);
 
-    // One identifier in any of the three quoting styles, or bare.
-    const IDENT = '(?:\\[([^\\]]+)\\]|`([^`]+)`|"([^"]+)"|([A-Za-z_][\\w#]*))';
+    // One identifier in any of the three quoting styles, or bare. The trailing
+    // "()" alternative captures the T-SQL default-schema dot ("db..tbl") as a
+    // zero-length identifier: a bare "|" would match empty but capture nothing,
+    // making the segment indistinguishable from an absent one.
+    const IDENT = '(?:\\[([^\\]]+)\\]|`([^`]+)`|"([^"]+)"|([A-Za-z_][\\w#]*)|())';
 
-    // Scans the document for "FROM [<owner>.]<table> [alias]" and the same for
-    // JOIN. Returns { aliases: Map(lowerAlias -> qualifiedName), tables: [name] }.
+    // Scans the document for "FROM [<db>.][<owner>.]<table> [alias]" and the
+    // same for JOIN. Returns { aliases: Map(lowerAlias -> qualifiedName), tables: [name] }.
     // Deliberately regex-based, not a real parser: an admin editor needs useful
-    // hints, not a SQL compiler. Both the bare and the owner-qualified form are
-    // collected, because objects outside the default schema are indexed under
-    // their qualified name while default-schema objects are indexed bare.
+    // hints, not a SQL compiler. All name variants are collected, because
+    // objects are indexed under their bare, owner-qualified and db-qualified
+    // forms depending on engine and context. The db/owner identifiers are
+    // OPTIONAL inside their segment so the T-SQL default-schema form
+    // ("DbGanci..Products p") still yields the alias.
     function extractFromClauses(text) {
         const aliases = new Map();
         const tables = [];
         const re = new RegExp(
-            '(?:FROM|JOIN)\\s+(?:' + IDENT + '\\s*\\.\\s*)?' + IDENT + '\\s*(?:AS\\s+)?([A-Za-z_][\\w]*)?',
+            '(?:FROM|JOIN)\\s+' +
+            // NOTE: no '?' after IDENT here. IDENT's "()" alternative already
+            // matches empty, and a quantifier (IDENT?) would REJECT a
+            // zero-width body match per the ECMAScript RepeatMatcher rule,
+            // silently dropping the "db.." default-schema capture.
+            '(?:' + IDENT + '\\s*\\.\\s*)?' +    // database (db.schema.table / db..table)
+            '(?:' + IDENT + '\\s*\\.\\s*)?' +    // owner / schema
+            IDENT +                              // table
+            '\\s*(?:AS\\s+)?([A-Za-z_][\\w]*)?',
             'gi');
         let m;
         while ((m = re.exec(text)) !== null) {
-            const owner = m[1] || m[2] || m[3] || m[4];
-            const tableName = m[5] || m[6] || m[7] || m[8];
+            // ?? keeps "" (dot-only segment = T-SQL default schema) distinct
+            // from undefined (segment absent): "db1..n1" must stay "db1..n1",
+            // not collapse to "db1.n1".
+            const dbIdent = m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5];
+            const ownerIdent = m[6] ?? m[7] ?? m[8] ?? m[9] ?? m[10];
+            const tableName = m[11] || m[12] || m[13] || m[14] || m[15];
             if (!tableName) continue;
-            const qualified = owner ? owner + '.' + tableName : null;
+            let qualified = tableName;
+            if (ownerIdent !== undefined) qualified = ownerIdent + '.' + qualified;
+            if (dbIdent !== undefined) qualified = dbIdent + '.' + qualified;
             tables.push(tableName);
-            if (qualified) tables.push(qualified);
-            if (m[9] && !SQL_STOPWORDS.has(m[9].toLowerCase()))
-                aliases.set(m[9].toLowerCase(), qualified || tableName);
+            if (ownerIdent) tables.push(ownerIdent + '.' + tableName);
+            if (dbIdent) tables.push(qualified);
+            if (m[16] && !SQL_STOPWORDS.has(m[16].toLowerCase()))
+                aliases.set(m[16].toLowerCase(), qualified);
         }
         return { aliases: aliases, tables: tables };
     }
 
     function columnsOf(tableName) {
-        const obj = tableIndex.get(String(tableName).toLowerCase());
-        return obj ? obj.columns : [];
+        const name = String(tableName);
+        const obj = tableIndex.get(name.toLowerCase());
+        if (obj) return obj.columns;
+        // Cross-database / fully-qualified reference ("db1.sales.orders",
+        // typically reached through an alias): resolve through the server index.
+        if (name.includes('.')) {
+            const resolved = resolveServerChain(name.split('.'));
+            if (resolved && resolved.kind === 'columns') return resolved.list;
+        }
+        return [];
     }
 
     function suggestColumns(list, suggestions, range, prefix) {
@@ -186,6 +231,121 @@ window.dbSqlEditor = (() => {
         }
     }
 
+    // --- Cross-database chain resolution --------------------------------------
+    // Powers hierarchical completion on server-level connections:
+    // "db1." -> schemas (MSSQL) or tables (MySQL); "db1.schema." -> tables;
+    // "db1.schema.tbl." / "db1.tbl." -> columns.
+
+    // Captures the full dotted chain immediately before the cursor's dot:
+    // "db1.[sales].tbl." -> ["db1", "sales", "tbl"]. All three quoting styles
+    // are recognized and unquoted. An EMPTY segment is kept ("db1.." ->
+    // ["db1", ""], the T-SQL default-schema syntax). Returns null without a
+    // trailing dot.
+    function dottedChainBeforeDot(lineUntil) {
+        // The alternation MUST be wrapped in (?:...) — embedded into the chain
+        // repeat below, an unwrapped "|a|b|c" would let the alternatives match
+        // without the preceding dot and silently break the whole chain.
+        const IDENT_ANY = '(?:\\[[^\\]]+\\]|`[^`]+`|"[^"]+"|[A-Za-z_][\\w#]*)';
+        // Each repeat segment's identifier is OPTIONAL so "db1.." stays
+        // ["db1", ""] rather than collapsing to ["db1"].
+        const m = lineUntil.match(
+            new RegExp('((' + IDENT_ANY + ')(?:\\s*\\.\\s*(?:' + IDENT_ANY + ')?)*)\\s*\\.\\s*$'));
+        if (!m) return null;
+        return m[1].split('.').map(p => {
+            p = p.trim();
+            const q = p.match(/^\[([^\]]+)\]$|^`([^`]+)`$|^"([^"]+)"$/);
+            return q ? (q[1] || q[2] || q[3]) : p;
+        });
+    }
+
+    // Resolves a dotted chain against the server index. Returns one of
+    // { kind: 'schemas', list }, { kind: 'objects', list }, { kind: 'columns', list }
+    // or null when the chain does not start with a known database / matches nothing.
+    function resolveServerChain(parts) {
+        if (!parts || !parts.length) return null;
+        const db = serverIndex.get(parts[0].toLowerCase());
+        if (!db) return null;
+        // T-SQL "db..table": an empty segment means the DEFAULT schema — the
+        // dialect's owner hint (dbo). MySQL has no such syntax (empty stays
+        // empty and simply matches nothing).
+        const rest = parts.slice(1).map(p =>
+            p === '' && db.threePart && dialect.ownerHint ? dialect.ownerHint : p);
+        if (db.threePart) {
+            // MSSQL: db.schema.table
+            if (rest.length === 0) return { kind: 'schemas', list: db.schemaNames };
+            if (rest.length === 1) {
+                const m = db.schemas.get(rest[0].toLowerCase());
+                return m ? { kind: 'objects', list: [...m.values()] } : null;
+            }
+            if (rest.length === 2) {
+                const obj = db.schemas.get(rest[0].toLowerCase())?.get(rest[1].toLowerCase());
+                return obj ? { kind: 'columns', list: obj.columns } : null;
+            }
+            return null;
+        }
+        // MySQL: db.table
+        if (rest.length === 0) return { kind: 'objects', list: [...db.objects.values()] };
+        if (rest.length === 1) {
+            const obj = db.objects.get(rest[0].toLowerCase());
+            return obj ? { kind: 'columns', list: obj.columns } : null;
+        }
+        return null;
+    }
+
+    // Emits suggestions for a resolved cross-database chain. Returns false when
+    // there was nothing to suggest. Everything is inserted BARE: the db/schema
+    // prefix is already typed, and a qualified insert would duplicate the
+    // schema part ("db1.sales." + "sales.orders" — never wanted).
+    function emitServerSuggestions(resolved, chain, suggestions, range) {
+        if (!resolved || !resolved.list.length) return false;
+        if (resolved.kind === 'schemas') {
+            for (const s of resolved.list) {
+                suggestions.push({
+                    label: s,
+                    kind: monaco.languages.CompletionItemKind.Module,
+                    detail: 'schema in ' + chain[0],
+                    insertText: sqlIdent(s),
+                    range: range
+                });
+            }
+            return true;
+        }
+        if (resolved.kind === 'objects') {
+            for (const obj of resolved.list) {
+                const isFn = obj.kind === 'Function';
+                suggestions.push({
+                    label: bareName(obj),
+                    kind: (obj.kind === 'Procedure' || isFn)
+                        ? monaco.languages.CompletionItemKind.Function
+                        : monaco.languages.CompletionItemKind.Class,
+                    detail: obj.kind + ' — ' + chain.join('.'),
+                    documentation: obj.columns.length
+                        ? obj.columns.map(c => `${c.name} ${c.dataType}`).join('\n').slice(0, 800)
+                        : undefined,
+                    insertText: sqlIdent(bareName(obj)),
+                    range: range
+                });
+            }
+            return true;
+        }
+        suggestColumns(resolved.list, suggestions, range);
+        return true;
+    }
+
+    // Database names as completion items (server-level connections only —
+    // the map is empty otherwise, making this a no-op).
+    function suggestDatabases(suggestions, range) {
+        for (const db of serverIndex.values()) {
+            suggestions.push({
+                label: db.name,
+                kind: monaco.languages.CompletionItemKind.Module,
+                detail: 'database',
+                insertText: sqlIdent(db.name),
+                range: range
+            });
+        }
+    }
+
     function registerCompletion() {
         if (completionRegistered) return;
         completionRegistered = true;
@@ -213,17 +373,31 @@ window.dbSqlEditor = (() => {
                 };
                 const suggestions = [];
 
-                // --- Context 1: "something." → columns of that something. ---
-                const beforeDot = lineUntil.match(/([A-Za-z_][\w#]*)\.\s*$/);
-                if (beforeDot) {
-                    const owner = beforeDot[1].toLowerCase();
+                // --- Context 1: "dotted." → members of the dotted chain. ---
+                const chain = dottedChainBeforeDot(lineUntil);
+                if (chain) {
+                    // Multi-segment chains are tried against the cross-database
+                    // index first ("db1.schema." / "db2.tbl."); chains whose first
+                    // segment is not a database (e.g. "sales.orders.") fall
+                    // through to the single-identifier behavior below.
+                    if (chain.length >= 2) {
+                        const cross = resolveServerChain(chain);
+                        if (emitServerSuggestions(cross, chain, suggestions, range))
+                            return { suggestions: suggestions };
+                    }
+
                     const from = extractFromClauses(model.getValue());
 
+                    // Last segment as owner — the pre-cross-database behavior.
                     // Alias wins ("FROM Products p … p."): resolve through the
                     // alias map first, then fall back to a literal table name.
+                    // columnsOf also resolves db-qualified alias targets
+                    // ("FROM db1.schema.tbl x" → alias "x").
+                    const owner = chain[chain.length - 1].toLowerCase();
                     const tableName = from.aliases.get(owner) || owner;
-                    if (tableIndex.has(tableName)) {
-                        suggestColumns(columnsOf(tableName), suggestions, range);
+                    const cols = columnsOf(tableName);
+                    if (cols.length) {
+                        suggestColumns(cols, suggestions, range);
                         return { suggestions: suggestions };
                     }
                     // Owner hint (dbo. in SSMS) → schema objects, no-op where the
@@ -232,7 +406,39 @@ window.dbSqlEditor = (() => {
                         suggestObjects(suggestions, range, ['Table', 'View']);
                         return { suggestions: suggestions };
                     }
+                    // Fallback: the chain's first segment is a database name
+                    // after all ("db1." with no table/alias/owner-hint matching).
+                    const cross = resolveServerChain(chain);
+                    if (emitServerSuggestions(cross, chain, suggestions, range))
+                        return { suggestions: suggestions };
                     return { suggestions: suggestions };
+                }
+
+                // --- Context 1b: cross-DB prefix + partial word ("db1.dbo.Na|"). ---
+                // The word being typed completes a name after a dotted
+                // cross-database prefix: resolve the PREFIX against the server
+                // index so the popup lists THAT database's schemas/objects/
+                // columns instead of the active database's. Monaco filters the
+                // list by the typed word on its own. Prefixes that do not start
+                // with a database ("dbo.Na|", "p.Na|") resolve to null here and
+                // keep their existing behavior.
+                const chainBeforeWord = dottedChainBeforeDot(lineUntil.slice(0, word.startColumn - 1));
+                if (chainBeforeWord) {
+                    const cross = resolveServerChain(chainBeforeWord);
+                    if (emitServerSuggestions(cross, chainBeforeWord, suggestions, range))
+                        return { suggestions: suggestions };
+                    // Single-segment alias prefix ("c.Na|" after
+                    // "FROM db..tbl c"): same resolution as the trailing-dot
+                    // context — alias first, then a literal table name.
+                    if (chainBeforeWord.length === 1) {
+                        const from = extractFromClauses(model.getValue());
+                        const target = from.aliases.get(chainBeforeWord[0].toLowerCase()) || chainBeforeWord[0];
+                        const cols = columnsOf(target);
+                        if (cols.length) {
+                            suggestColumns(cols, suggestions, range);
+                            return { suggestions: suggestions };
+                        }
+                    }
                 }
 
                 // --- Context detection by last keyword on the line. ---
@@ -243,12 +449,15 @@ window.dbSqlEditor = (() => {
                 const from = extractFromClauses(model.getValue());
 
                 if (lastToken === 'FROM' || lastToken === 'JOIN' || lastToken === 'INTO') {
-                    // Table position: offer tables + views (INTO can target both).
+                    // Table position: offer tables + views (INTO can target both),
+                    // plus the databases themselves for cross-DB qualified names.
                     suggestObjects(suggestions, range, ['Table', 'View']);
+                    suggestDatabases(suggestions, range);
                     return { suggestions: suggestions };
                 }
                 if (lastToken === 'EXEC' || lastToken === 'EXECUTE' || lastToken === 'CALL') {
                     suggestObjects(suggestions, range, ['Procedure']);
+                    suggestDatabases(suggestions, range);
                     return { suggestions: suggestions };
                 }
                 if (['SELECT', 'WHERE', 'AND', 'OR', 'ON', 'ORDER', 'GROUP', 'BY', 'SET', 'HAVING'].includes(lastToken)) {
@@ -276,6 +485,7 @@ window.dbSqlEditor = (() => {
 
                 // --- Default: tables + views + procs + functions + snippets. ---
                 suggestObjects(suggestions, range, ['Table', 'View', 'Procedure', 'Function']);
+                suggestDatabases(suggestions, range);
                 suggestSnippets(suggestions, range);
                 return { suggestions: suggestions };
             }
@@ -370,9 +580,10 @@ window.dbSqlEditor = (() => {
         },
 
         // Schema + dialect push from C#: serialized payload
-        // { schema: List<SchemaObject>, dialect: DialectConfig } (camelCase,
-        // Kind as text). Rebuilds the lowercase lookup index used by the
-        // completion + hover providers.
+        // { schema: List<SchemaObject>, dialect: DialectConfig,
+        //   databases: List<DatabaseSchema> } (camelCase, Kind as text).
+        // Rebuilds the lowercase lookup indexes used by the completion + hover
+        // providers; `databases` is absent/empty for non-cross-DB connections.
         setSchema: (json) => {
             const payload = JSON.parse(json);
             schema = payload.schema || [];
@@ -384,6 +595,31 @@ window.dbSqlEditor = (() => {
             tableIndex.clear();
             for (const obj of schema)
                 tableIndex.set(obj.name.toLowerCase(), obj);
+
+            serverIndex.clear();
+            for (const db of payload.databases || []) {
+                const entry = {
+                    name: db.name, threePart: false,
+                    schemaNames: [], schemas: new Map(), objects: new Map()
+                };
+                const seenSchemas = new Set();
+                for (const obj of db.objects || []) {
+                    const bare = bareName(obj);
+                    if (obj.schema) {
+                        entry.threePart = true;
+                        const schemaLower = obj.schema.toLowerCase();
+                        if (!seenSchemas.has(schemaLower)) {
+                            seenSchemas.add(schemaLower);
+                            entry.schemaNames.push(obj.schema);
+                        }
+                        let m = entry.schemas.get(schemaLower);
+                        if (!m) entry.schemas.set(schemaLower, m = new Map());
+                        m.set(bare.toLowerCase(), obj);
+                    }
+                    entry.objects.set(bare.toLowerCase(), obj);
+                }
+                serverIndex.set(db.name.toLowerCase(), entry);
+            }
         },
 
         // Connection switched: keep the editor, swap the draft the autosave

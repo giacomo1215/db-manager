@@ -58,6 +58,21 @@ namespace DbManager.Models
     }
 
     /// <summary>
+    /// Schema of ONE database of a server-level connection, for cross-database
+    /// IntelliSense (MSSQL three-part / MySQL two-part names). Populated eagerly
+    /// once per profile; a database whose schema could not be read (no access,
+    /// offline) is simply absent from the list.
+    /// </summary>
+    public class DatabaseSchema
+    {
+        /// <summary>Database name as shown in the editor's database picker.</summary>
+        public string Name { get; set; } = string.Empty;
+
+        /// <summary>Objects of this database, same shape as the active schema.</summary>
+        public List<SchemaObject> Objects { get; set; } = [];
+    }
+
+    /// <summary>
     /// Outcome of an arbitrary SQL execution. The SQL Editor cannot know the
     /// result shape at compile time, so results are carried as DataTables —
     /// one per result set — plus a DML row count.

@@ -63,6 +63,45 @@ namespace DbManager.Services
         }
 
         /// <inheritdoc />
+        public async Task<List<DatabaseSchema>> GetServerSchemaAsync(ConnectionProfile profile, CancellationToken ct = default)
+        {
+            var connector = ResolveConnector(profile);
+            var databases = await ListDatabasesAsync(profile, ct);
+
+            // Bounded parallelism: a 50-database server must not open 50
+            // connections at once, but sequential round trips would be needlessly
+            // slow (each database is ~5 independent catalog queries). Profiles
+            // created from a raw connection string have empty structured fields,
+            // so their per-database connections all fail — the server schema
+            // simply comes back empty for those.
+            using var throttle = new SemaphoreSlim(8, 8);
+            var tasks = databases.Select(async db =>
+            {
+                await throttle.WaitAsync(ct);
+                try
+                {
+                    await using var conn = connector.CreateConnection(connector.BuildConnectionString(profile.ToFormData(db)));
+                    await conn.OpenAsync(ct);
+                    return new DatabaseSchema { Name = db, Objects = await connector.GetSchemaAsync(conn, ct) };
+                }
+                catch (Exception)
+                {
+                    // Per-DB never-throw: no access / offline / timeout skips that
+                    // database — one restricted database must not kill cross-DB
+                    // IntelliSense for the rest.
+                    return null!;
+                }
+                finally
+                {
+                    throttle.Release();
+                }
+            });
+            var loaded = await Task.WhenAll(tasks);
+            // Preserves the ListDatabasesAsync order (sys.databases is sorted by name).
+            return loaded.Where(d => d is not null).Cast<DatabaseSchema>().ToList();
+        }
+
+        /// <inheritdoc />
         public async Task<SqlEditorResult> ExecuteAsync(ConnectionProfile profile, string sql, CancellationToken ct = default)
         {
             var result = new SqlEditorResult();

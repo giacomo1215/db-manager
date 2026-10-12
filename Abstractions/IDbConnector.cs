@@ -74,6 +74,13 @@ namespace DbManager.Abstractions
         /// database (server-level profiles and the database picker). False for SQLite.</summary>
         bool SupportsServerLevel { get; }
 
+        /// <summary>
+        /// True when queries can span databases (MSSQL three-part names, MySQL
+        /// db-qualified tables) and cross-database IntelliSense applies. False for
+        /// PostgreSQL (no native cross-database queries) and SQLite.
+        /// </summary>
+        bool SupportsCrossDatabaseQueries { get; }
+
         /// <summary>Connection string for server-level operations (listing
         /// databases): no pinned database, or the engine's maintenance database.</summary>
         string BuildServerConnectionString(ConnectionFormData form);

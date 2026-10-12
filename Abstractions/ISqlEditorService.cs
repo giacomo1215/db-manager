@@ -18,6 +18,14 @@ namespace DbManager.Abstractions
         /// <summary>Lists databases visible on the server of a server-level profile.</summary>
         Task<List<string>> ListDatabasesAsync(ConnectionProfile profile, CancellationToken ct = default);
 
+        /// <summary>
+        /// Eagerly loads the schema of EVERY database on the profile's server
+        /// (server-level mssql/mysql profiles) for cross-database IntelliSense.
+        /// Databases the login cannot read are skipped, never thrown for.
+        /// Throws only when the server itself is unreachable.
+        /// </summary>
+        Task<List<DatabaseSchema>> GetServerSchemaAsync(ConnectionProfile profile, CancellationToken ct = default);
+
         /// <summary>Executes the script (possibly multiple batches) against the profile.</summary>
         Task<SqlEditorResult> ExecuteAsync(ConnectionProfile profile, string sql, CancellationToken ct = default);
 
