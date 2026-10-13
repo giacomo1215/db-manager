@@ -13,6 +13,13 @@ namespace DbManager.Abstractions
         /// <summary>Whether the vault file exists on disk (first run: it does not).</summary>
         bool VaultExists();
 
+        /// <summary>
+        /// The on-disk vault's KDF parameters. Reused by the saved-query backup so
+        /// an encrypted export embeds a salt the master password re-derives the
+        /// session key from. Throws if the vault file is absent/corrupted.
+        /// </summary>
+        KdfParams CurrentKdf { get; }
+
         /// <summary>Creates the vault file, encrypting an (initially empty) profile list.</summary>
         void CreateVault(string masterPassword, List<ConnectionProfile> profiles);
 

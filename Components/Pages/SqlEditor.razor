@@ -4,6 +4,7 @@
 @inject ISqlEditorViewModel vm
 @inject ISqlEditorService EditorService
 @inject ISessionVault SessionVault
+@inject IQueryStore QueryStore
 @inject IDbConnectorRegistry Registry
 @inject IToastService Toasts
 @inject NavigationManager Navigation
@@ -54,6 +55,12 @@
                 @onclick="() => _showDump = !_showDump">
             <i class="bi bi-cloud-arrow-down"></i>
         </button>
+        @* Saved-query library: save the editor content, reload it later, move a
+           single query to/from a .sql file. Opens a modal dialog. *@
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                title="Saved queries" @onclick="OpenQueriesDialogAsync">
+            <i class="bi bi-bookmark-star"></i>
+        </button>
         <button type="button" class="btn btn-sm btn-primary" disabled="@(_isRunning || !_editorReady)"
                 @onclick="RunButton_Click">
             <i class="bi bi-play-fill me-1"></i>Run
@@ -67,6 +74,121 @@
         <DatabaseDump Profile="vm.ActiveProfile" />
     </div>
 }
+
+@* ============ SAVED-QUERY LIBRARY (modal dialog) ============ *@
+@* Always in the DOM; shown/hidden via dbmSite.openDialog/closeDialog (native
+   showModal gives the modal + ::backdrop). Content re-renders in place. *@
+<dialog id="@QueriesDialogId" class="dbm-queries-dialog">
+    <div class="dbm-queries-dialog-body">
+        <div class="d-flex flex-row justify-content-between align-items-center mb-1">
+            <h5 class="mb-0"><i class="bi bi-bookmark-star me-2"></i>Saved queries</h5>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="CloseQueriesDialogAsync"></button>
+        </div>
+        <p class="text-body-secondary small mb-3">
+            The library is global; each query is tagged with the connection it was saved from.
+        </p>
+
+        @if (!QueryStore.IsAvailable)
+        {
+            <div class="alert alert-warning py-2 small mb-2">
+                <i class="bi bi-lock-fill me-1"></i>Unlock the vault to use saved queries.
+            </div>
+        }
+        else
+        {
+            @* ---- Save the current editor content ---- *@
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                <input type="text" class="form-control form-control-sm query-name-input"
+                       placeholder="Query name" @bind="_newQueryName" @bind:event="oninput" />
+                <button type="button" class="btn btn-sm btn-primary" @onclick="SaveCurrentQueryAsync">
+                    <i class="bi bi-bookmark-plus me-1"></i>Save current
+                </button>
+                @* Import a .sql file into the editor (loads text; never executes). *@
+                <span class="text-body-secondary small ms-2">Import .sql:</span>
+                <InputFile OnChange="OnQueryFileSelectedAsync" @key="_queryImportKey"
+                           accept=".sql,text/plain,.txt" class="form-control form-control-sm query-file-input" />
+            </div>
+
+            @* ---- Search ---- *@
+            <div class="mb-2">
+                <input type="text" class="form-control form-control-sm" placeholder="Search queries..."
+                       @bind="_querySearch" @bind:event="oninput" />
+            </div>
+
+            @* ---- The library list ---- *@
+            @if (_savedQueries.Count == 0)
+            {
+                <div class="text-body-secondary small">No saved queries yet.</div>
+            }
+            else
+            {
+                var filtered = FilteredQueries().ToList();
+                if (filtered.Count == 0)
+                {
+                    <div class="text-body-secondary small">No queries match "@_querySearch".</div>
+                }
+                <div class="query-library-list">
+                    @foreach (var q in filtered)
+                    {
+                        <div class="query-library-item d-flex flex-row align-items-center gap-2 border-top py-1">
+                            @if (_renamingId == q.Id)
+                            {
+                                <input type="text" class="form-control form-control-sm" @bind="_renameText" @bind:event="oninput" />
+                                <button type="button" class="btn btn-sm btn-outline-primary" @onclick="() => CommitRenameAsync(q.Id)">OK</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CancelRename">Cancel</button>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn btn-link p-0 text-start flex-grow-1 query-name-btn"
+                                        title="Load into the editor" @onclick="() => RequestLoadAsync(q.Id)">
+                                    <i class="bi bi-filetype-sql me-1"></i>@q.Name
+                                    @if (!string.IsNullOrEmpty(q.EngineKey))
+                                    {
+                                        <span class="badge text-bg-secondary ms-1">@EngineName(q.EngineKey)</span>
+                                    }
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" title="Export .sql"
+                                        @onclick="() => ExportQueryAsync(q)">
+                                    <i class="bi bi-download"></i>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" title="Rename"
+                                        @onclick="() => BeginRename(q)">
+                                    <i class="bi bi-pencil"></i>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-outline-danger" title="Delete"
+                                        @onclick="() => RequestDelete(q.Id)">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @* ---- Inline confirms (overwrite editor / delete) ---- *@
+            @if (_pendingLoadId is Guid loadId)
+            {
+                var loadQuery = _savedQueries.FirstOrDefault(x => x.Id == loadId);
+                <div class="alert alert-danger d-flex flex-row align-items-center gap-2 mt-3 mb-0 py-2" role="alert">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <span class="flex-grow-1 small">Load "@loadQuery?.Name"? The editor content will be replaced.</span>
+                    <button type="button" class="btn btn-sm btn-danger" @onclick="() => LoadQueryAsync(loadId)">Load</button>
+                    <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelPending">Cancel</button>
+                </div>
+            }
+            @if (_pendingDeleteId is Guid delId)
+            {
+                var delQuery = _savedQueries.FirstOrDefault(x => x.Id == delId);
+                <div class="alert alert-danger d-flex flex-row align-items-center gap-2 mt-3 mb-0 py-2" role="alert">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <span class="flex-grow-1 small">Delete "@delQuery?.Name"? This cannot be undone.</span>
+                    <button type="button" class="btn btn-sm btn-danger" @onclick="() => ConfirmDeleteAsync(delId)">Delete</button>
+                    <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelPending">Cancel</button>
+                </div>
+            }
+        }
+    </div>
+</dialog>
 
 <div class="sql-root">
     @* ============ SIDEBAR: schema browser ============ *@
@@ -337,6 +459,7 @@
     private const string ResultsDivId = "dbm-sql-results";
     private const string SidebarId = "dbm-sql-sidebar";
     private const string SidebarDragId = "dbm-sql-sidebar-drag";
+    private const string QueriesDialogId = "dbm-queries-dialog";
 
     // Set by OnEditorReady (JS callback): the Run button and query reads must not
     // fire before Monaco exists — the AMD require() engine download is async.
@@ -358,6 +481,17 @@
     // Database backup / schema export panel (DatabaseDump component).
     private bool _showDump;
     private bool _sidebarWired;
+
+    // Saved-query library (modal dialog). The list is pulled from the scoped
+    // IQueryStore each time the dialog opens (cheap: a handful of rows, one SELECT).
+    private List<SavedQuery> _savedQueries = [];
+    private string _querySearch = string.Empty;
+    private string _newQueryName = string.Empty;
+    private Guid? _renamingId;
+    private string _renameText = string.Empty;
+    private Guid? _pendingLoadId;
+    private Guid? _pendingDeleteId;
+    private int _queryImportKey;
 
     private SqlEditorResult? _result;
     private int _activeTab;
@@ -779,6 +913,214 @@
     /// <summary>Inline width for the sidebar; JS updates it directly while dragging,
     /// this re-seeds the C#-known value so re-renders keep the dragged width.</summary>
     private string GetSidebarStyle() => $"width: {_sidebarWidth.ToString(System.Globalization.CultureInfo.InvariantCulture)}px;";
+
+    // ---------------- Saved-query library ----------------
+
+    /// <summary>Opens the saved-query dialog (reloads the list, then showModal).</summary>
+    private async Task OpenQueriesDialogAsync()
+    {
+        ReloadQueries();
+        await JS.InvokeVoidAsync("dbmSite.openDialog", QueriesDialogId);
+    }
+
+    /// <summary>Live filter: name OR SQL body OR engine tag contains the term.</summary>
+    private IEnumerable<SavedQuery> FilteredQueries()
+    {
+        if (string.IsNullOrWhiteSpace(_querySearch))
+            return _savedQueries;
+
+        var term = _querySearch.Trim();
+        return _savedQueries.Where(q =>
+            q.Name.Contains(term, StringComparison.OrdinalIgnoreCase)
+            || q.Sql.Contains(term, StringComparison.OrdinalIgnoreCase)
+            || q.EngineKey.Contains(term, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task CloseQueriesDialogAsync() =>
+        await JS.InvokeVoidAsync("dbmSite.closeDialog", QueriesDialogId);
+
+    /// <summary>Reads the library into component state. Never throws (never-throw UI contract).</summary>
+    private void ReloadQueries()
+    {
+        _pendingLoadId = null;
+        _pendingDeleteId = null;
+        _renamingId = null;
+        if (!QueryStore.IsAvailable)
+        {
+            _savedQueries = [];
+            return;
+        }
+        try
+        {
+            _savedQueries = QueryStore.GetAll();
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Saved queries", ex.Message, ToastKind.Danger);
+            _savedQueries = [];
+        }
+    }
+
+    /// <summary>Saves the current editor content under the typed name.</summary>
+    private async Task SaveCurrentQueryAsync()
+    {
+        if (!QueryStore.IsAvailable || !_editorReady)
+            return;
+
+        var name = _newQueryName.Trim();
+        if (name.Length == 0)
+        {
+            Toasts.Show("Save", "Enter a name for the query.", ToastKind.Warning);
+            return;
+        }
+
+        var sql = await JS.InvokeAsync<string>("dbSqlEditor.getValue", EditorDivId);
+        if (string.IsNullOrWhiteSpace(sql))
+        {
+            Toasts.Show("Save", "The editor is empty.", ToastKind.Warning);
+            return;
+        }
+
+        try
+        {
+            QueryStore.Add(name, sql, vm.ActiveProfile?.Id, vm.ActiveProfile?.EngineKey ?? string.Empty);
+            _newQueryName = string.Empty;
+            ReloadQueries();
+            Toasts.Show("Saved", $"Query \"{name}\" saved.", ToastKind.Success);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Save failed", ex.Message, ToastKind.Danger);
+        }
+    }
+
+    /// <summary>Load click: overwrite the editor, but confirm when it already has content.</summary>
+    private async Task RequestLoadAsync(Guid id)
+    {
+        var current = _editorReady ? await JS.InvokeAsync<string>("dbSqlEditor.getValue", EditorDivId) : string.Empty;
+        if (string.IsNullOrWhiteSpace(current) || current.StartsWith("-- Write a query", StringComparison.Ordinal))
+        {
+            await LoadQueryAsync(id);
+            return;
+        }
+        _pendingLoadId = id;
+    }
+
+    private async Task LoadQueryAsync(Guid id)
+    {
+        var query = _savedQueries.FirstOrDefault(x => x.Id == id);
+        if (query is null)
+            return;
+        await JS.InvokeVoidAsync("dbSqlEditor.setValue", EditorDivId, query.Sql);
+        _pendingLoadId = null;
+        await JS.InvokeVoidAsync("dbmSite.closeDialog", QueriesDialogId); // pick → back to the editor
+        Toasts.Show("Query loaded", query.Name, ToastKind.Success);
+    }
+
+    private void BeginRename(SavedQuery query)
+    {
+        _renamingId = query.Id;
+        _renameText = query.Name;
+        _pendingLoadId = null;
+        _pendingDeleteId = null;
+    }
+
+    private void CancelRename()
+    {
+        _renamingId = null;
+        _renameText = string.Empty;
+    }
+
+    private void CommitRenameAsync(Guid id)
+    {
+        var name = _renameText.Trim();
+        if (name.Length == 0)
+        {
+            Toasts.Show("Rename", "Name cannot be empty.", ToastKind.Warning);
+            return;
+        }
+        try
+        {
+            QueryStore.Rename(id, name);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Rename failed", ex.Message, ToastKind.Danger);
+            return;
+        }
+        CancelRename();
+        ReloadQueries();
+    }
+
+    private void RequestDelete(Guid id)
+    {
+        _pendingDeleteId = id;
+        _pendingLoadId = null;
+        _renamingId = null;
+    }
+
+    private void ConfirmDeleteAsync(Guid id)
+    {
+        try
+        {
+            QueryStore.Delete(id);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Delete failed", ex.Message, ToastKind.Danger);
+            return;
+        }
+        ReloadQueries();
+    }
+
+    private void CancelPending()
+    {
+        _pendingLoadId = null;
+        _pendingDeleteId = null;
+    }
+
+    /// <summary>Single query → .sql download.</summary>
+    private async Task ExportQueryAsync(SavedQuery query)
+    {
+        var name = SafeFileName(query.Name) + ".sql";
+        await JS.InvokeVoidAsync("dbmSite.downloadTextFile", name, "application/sql", query.Sql);
+        Toasts.Show("Export", $"Downloaded {name}.", ToastKind.Success);
+    }
+
+    /// <summary>Import a .sql file: loads its text into the editor (does not execute).</summary>
+    private async Task OnQueryFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        const long maxBytes = 5 * 1024 * 1024;
+        try
+        {
+            var file = e.File;
+            if (file.Size > maxBytes)
+            {
+                Toasts.Show("Import failed", "The file is larger than 5 MB.", ToastKind.Danger);
+                return;
+            }
+            using var reader = new StreamReader(file.OpenReadStream(maxBytes));
+            var text = await reader.ReadToEndAsync();
+            await JS.InvokeVoidAsync("dbSqlEditor.setValue", EditorDivId, text);
+            Toasts.Show("Import", $"\"{file.Name}\" loaded into the editor.", ToastKind.Success);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Import failed", ex.Message, ToastKind.Danger);
+        }
+        finally
+        {
+            _queryImportKey++; // fresh InputFile so the same file can be re-picked
+        }
+    }
+
+    /// <summary>Filesystem-safe file name from a query name.</summary>
+    private static string SafeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
+        return cleaned.Length == 0 ? "query" : cleaned;
+    }
 
     public void Dispose()
     {

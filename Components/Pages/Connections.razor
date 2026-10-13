@@ -3,6 +3,7 @@
 @using System.Threading
 @inject IVaultService Vault
 @inject ISessionVault SessionVault
+@inject IQueryStore QueryStore
 @inject IDbConnectorRegistry Registry
 @inject IToastService Toasts
 @inject NavigationManager Navigation
@@ -94,6 +95,8 @@
             </div>
 
             <BackupRestore />
+
+            <QueryLibraryBackup />
         </div>
 
         <div class="col-12 col-lg-7">
@@ -283,10 +286,16 @@
             return;
         }
 
+        // Capture the current key BEFORE it rotates: the saved-query library is
+        // encrypted under it and must be re-encrypted to the new key.
+        var oldKey = SessionVault.DerivedKey;
+
         try
         {
             var newKey = await Task.Run(() => Vault.ChangeMasterPassword(_masterPassword, SessionVault.Profiles));
             SessionVault.Unlock(newKey, SessionVault.Profiles);
+            if (oldKey is not null)
+                await Task.Run(() => QueryStore.Reencrypt(oldKey, newKey));
         }
         catch (Exception ex)
         {

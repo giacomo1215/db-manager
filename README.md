@@ -27,6 +27,7 @@ Adding another engine means one class implementing `IDbConnector` (Providers/) p
 - Schema browser sidebar: tables/views/procedures/functions, search, expandable columns, insert-at-cursor, quick "TOP 20"/"LIMIT 20" peek.
 - SSMS-style results: multiple result sets as tabs, virtualized grid, right-aligned numerics, italic NULLs; GO batch splitting (T-SQL); write statements gated behind a confirmation.
 - Write-gate keyword heuristics per dialect; connection switching with schema + draft swap.
+- Saved-query library: name and store the editor content, reload it from the header dropdown, move a single query to/from a `.sql` file, and back the whole library up.
 - Light/dark theme (Bootstrap 5.3 `data-bs-theme`).
 
 ## Backup & schema export (SQL Editor page → cloud-arrow button)
@@ -46,13 +47,62 @@ The panel on the SQL Editor page operates on the **active connection**:
 | SQL Server | composed from `sys.*` catalogs | Yes (GO batches, all-or-nothing) | FKs are added after data (`ALTER TABLE … ADD CONSTRAINT`), so dependency order can't fail. `SET IDENTITY_INSERT` brackets identity data. Column **collations** are not emitted (server default applies), and XML/spatial indexes are skipped. |
 | PostgreSQL | `pg_get_*def` catalog functions | Yes (all-or-nothing) | Sequences (incl. identity) recreated with `setval` after data; views topologically sorted; `GENERATED ALWAYS` identity data restored with `OVERRIDING SYSTEM VALUE`, stored generated columns skipped in INSERTs. Partition **child tables** are not dumped. Functions use `CREATE OR REPLACE` — a changed signature leaves the old version behind. Managed-hosting internal schemas (Supabase `auth`/`storage`/`realtime`/`vault`/…, `extensions`) are excluded — the dump is your own schemas only. |
 
+## Saved queries
+
+The bookmark button in the SQL Editor header opens the **saved-query library**
+(global across connections; each query is tagged with the connection it was saved
+from):
+
+- **Save current** — stores the editor content under the typed name. Click a query
+  to load it back into the editor (with a confirm when the editor already has
+  content). Rename and delete inline.
+- **Export .sql / Import .sql** — download a single query as a `.sql` file, or load
+  a `.sql` file into the editor. Import only loads text; it never executes.
+- **Backup** — the "Saved Queries Backup" card on the Connections page exports the
+  whole library as an **encrypted copy** (vault master password) or a **plaintext
+  JSON**, and restores either — mirroring the connections vault backup. Restore
+  replaces the entire library.
+
+Storage: a small SQLite file at `~/.db-manager/queries.db` (override with
+`QueryStore:Path`). Query **names and connection tags are plaintext** for fast
+listing; each query's **SQL text is AES-GCM-encrypted under the session vault
+key**, so the library is only readable while the vault is unlocked. Changing the
+master password, or restoring a different connections vault, re-encrypts the
+library under the new key automatically.
+
 ## Run
+
+### Development
 
 ```bash
 dotnet run
 ```
 
 Then open the URL from the console output. First visit: create the master password and add a connection (structured fields or a raw connection string; "Test connection" checks it before saving).
+
+### Desktop release (single PC, native window)
+
+```bash
+dotnet publish -c Release -p:PublishProfile=desktop
+```
+
+Produces a self-contained single-file `publish/desktop/win-x64/DbManager.exe`. Double-click it: a native OS window opens on the app — no browser, no console, no .NET install required. Kestrel still hosts Blazor Server internally, but bound to `127.0.0.1` on a random port, so it is invisible to the network. Closing the window exits the app.
+
+Windows requires the **WebView2 Runtime** (preinstalled on Windows 11; downloadable for older systems).
+
+### Server release (shared on a LAN)
+
+```bash
+dotnet publish -c Release -p:PublishProfile=server
+```
+
+Produces `publish/server/win-x64/DbManager.Server.exe`. Run it and the console prints the listening URL; with no configuration it binds `http://0.0.0.0:8080` so anyone on the LAN can reach it in a browser. Override with `--urls` / `ASPNETCORE_URLS`:
+
+```bash
+DbManager.Server.exe --urls http://0.0.0.0:9000
+```
+
+HTTPS is supported the usual Kestrel way (configure a cert via `Kestrel:Endpoints` in `appsettings.json` or `ASPNETCORE_Kestrel__...` env vars); the https→http redirect is enabled only when an `https://` endpoint actually exists. Windows Firewall prompts on first run — allow it for the LAN's network profile.
 
 ## Layout
 

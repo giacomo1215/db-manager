@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using DbManager.Abstractions;
 using DbManager.Models;
@@ -24,11 +23,6 @@ namespace DbManager.Services
     /// </summary>
     public class VaultService : IVaultService
     {
-        private const int SaltSize = 16;
-        private const int KeySize = 32;
-        private const int NonceSize = 12;
-        private const int TagSize = 16;
-
         private static readonly JsonSerializerOptions ProfileJsonOptions = new()
         {
             // Deterministic enough for round-tripping; profiles are our own model.
@@ -45,14 +39,17 @@ namespace DbManager.Services
 
         public bool VaultExists() => File.Exists(_vaultPath);
 
+        /// <inheritdoc />
+        public KdfParams CurrentKdf => ReadFile().Kdf;
+
         public void CreateVault(string masterPassword, List<ConnectionProfile> profiles)
         {
             var file = new VaultFile
             {
-                Kdf = NewKdfParams()
+                Kdf = VaultCrypto.NewKdfParams()
             };
-            var key = DeriveKey(masterPassword, file.Kdf);
-            file.Vault = Encrypt(key, Serialize(profiles));
+            var key = VaultCrypto.DeriveKey(masterPassword, file.Kdf);
+            file.Vault = VaultCrypto.Encrypt(key, Serialize(profiles));
 
             Directory.CreateDirectory(Path.GetDirectoryName(_vaultPath)!);
             WriteFile(file);
@@ -132,16 +129,16 @@ namespace DbManager.Services
         public void SaveProfiles(byte[] key, List<ConnectionProfile> profiles)
         {
             var file = ReadFile();
-            file.Vault = Encrypt(key, Serialize(profiles));
+            file.Vault = VaultCrypto.Encrypt(key, Serialize(profiles));
             WriteFile(file);
         }
 
         public byte[] ChangeMasterPassword(string newPassword, List<ConnectionProfile> profiles)
         {
             // Fresh salt + params, then re-encrypt the plaintext under the new key.
-            var file = new VaultFile { Kdf = NewKdfParams() };
-            var key = DeriveKey(newPassword, file.Kdf);
-            file.Vault = Encrypt(key, Serialize(profiles));
+            var file = new VaultFile { Kdf = VaultCrypto.NewKdfParams() };
+            var key = VaultCrypto.DeriveKey(newPassword, file.Kdf);
+            file.Vault = VaultCrypto.Encrypt(key, Serialize(profiles));
             WriteFile(file);
             return key;
         }
@@ -155,53 +152,9 @@ namespace DbManager.Services
         /// </summary>
         private static (byte[] Key, List<ConnectionProfile> Profiles) UnlockFile(VaultFile file, string masterPassword)
         {
-            var candidateKey = DeriveKey(masterPassword, file.Kdf);
-            var plaintext = Decrypt(candidateKey, file.Vault);
+            var candidateKey = VaultCrypto.DeriveKey(masterPassword, file.Kdf);
+            var plaintext = VaultCrypto.Decrypt(candidateKey, file.Vault);
             return (candidateKey, Deserialize(plaintext));
-        }
-
-        // --- crypto primitives -------------------------------------------------
-
-        private static KdfParams NewKdfParams() => new()
-        {
-            Salt = Convert.ToBase64String(RandomNumberGenerator.GetBytes(SaltSize))
-        };
-
-        private static byte[] DeriveKey(string masterPassword, KdfParams kdf)
-        {
-            // PBKDF2-SHA512 at the OWASP-recommended iteration floor. The
-            // parameters are stored in the file so they can be raised later.
-            var salt = Convert.FromBase64String(kdf.Salt);
-            return Rfc2898DeriveBytes.Pbkdf2(masterPassword, salt, kdf.Iterations, HashAlgorithmName.SHA512, KeySize);
-        }
-
-        private static VaultBlob Encrypt(byte[] key, string plaintext)
-        {
-            var nonce = RandomNumberGenerator.GetBytes(NonceSize);
-            var plainBytes = Encoding.UTF8.GetBytes(plaintext);
-            var cipher = new byte[plainBytes.Length];
-            var tag = new byte[TagSize];
-            using var aes = new AesGcm(key, TagSize);
-            aes.Encrypt(nonce, plainBytes, cipher, tag, ReadOnlySpan<byte>.Empty);
-            return new VaultBlob
-            {
-                Nonce = Convert.ToBase64String(nonce),
-                // One blob: tag first, then ciphertext — matches the layout Decrypt splits.
-                Ciphertext = Convert.ToBase64String([.. tag, .. cipher])
-            };
-        }
-
-        private static string Decrypt(byte[] key, VaultBlob blob)
-        {
-            var nonce = Convert.FromBase64String(blob.Nonce);
-            var all = Convert.FromBase64String(blob.Ciphertext);
-            var tag = all.AsSpan(0, TagSize);
-            var cipher = all.AsSpan(TagSize);
-            var plain = new byte[cipher.Length];
-            using var aes = new AesGcm(key, TagSize);
-            // Throws CryptographicException on tag mismatch (wrong master password).
-            aes.Decrypt(nonce, cipher, tag, plain, ReadOnlySpan<byte>.Empty);
-            return Encoding.UTF8.GetString(plain);
         }
 
         // --- serialization -------------------------------------------------------

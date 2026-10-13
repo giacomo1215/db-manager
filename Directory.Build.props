@@ -1,0 +1,28 @@
+<Project>
+  <!-- Properties defined in the .pubxml are imported too late to drive
+       conditions in the csproj (DefineConstants, OutputType, obj dirs), so
+       map the profile to DbManagerMode here, where MSBuild reads it early.
+       -p:DbManagerMode=... on the command line still wins. -->
+  <PropertyGroup>
+    <DbManagerMode Condition="'$(DbManagerMode)' == '' and '$(PublishProfile)' == 'desktop'">Desktop</DbManagerMode>
+    <DbManagerMode Condition="'$(DbManagerMode)' == '' and '$(PublishProfile)' == 'server'">Server</DbManagerMode>
+  </PropertyGroup>
+
+  <!-- Must live here, not the csproj: MSBuild reads BaseIntermediateOutputPath
+       before Microsoft.Common.props, otherwise obj paths mix and generated
+       files (AssemblyInfo, source generators) get compiled twice. -->
+  <PropertyGroup Condition="'$(DbManagerMode)' == 'Desktop'">
+    <BaseIntermediateOutputPath>obj\desktop\</BaseIntermediateOutputPath>
+    <OutputPath>bin\desktop\</OutputPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(DbManagerMode)' == 'Server'">
+    <BaseIntermediateOutputPath>obj\server\</BaseIntermediateOutputPath>
+    <OutputPath>bin\server\</OutputPath>
+  </PropertyGroup>
+  <!-- When a mode-specific obj dir is active, the SDK only excludes that
+       subtree from default globs; exclude all of obj\ so generated files
+       from other configurations/modes are never compiled. -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**;publish\**</DefaultItemExcludes>
+  </PropertyGroup>
+</Project>

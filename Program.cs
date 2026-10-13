@@ -2,8 +2,27 @@ using DbManager.Abstractions;
 using DbManager.Components;
 using DbManager.Providers;
 using DbManager.Services;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+#if DESKTOP
+using Photino.NET;
+#endif
 
 var builder = WebApplication.CreateBuilder(args);
+
+#if DESKTOP
+// Desktop release: loopback-only with an OS-assigned port. Invisible to the
+// LAN, no TLS cert needed.
+builder.WebHost.UseUrls("http://127.0.0.1:0");
+#else
+var configuredUrls = builder.Configuration["urls"];
+// Server release: LAN-ready default binding when nothing else was configured
+// (e.g. bare double-click of the exe). WebApplication only populates
+// app.Urls at Start, so checking it there would misfire even when
+// --urls/ASPNETCORE_URLS/launchSettings have set values.
+if (string.IsNullOrEmpty(configuredUrls))
+    builder.WebHost.UseUrls("http://0.0.0.0:8080");
+#endif
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
@@ -32,6 +51,11 @@ builder.Services.AddScoped<ISessionVault, SessionVault>();
 // --- Backup & restore: stateless format facade (singleton). Crypto stays in VaultService. ---
 builder.Services.AddSingleton<IBackupService, BackupService>();
 
+// --- Saved-query library: scoped SQLite store (encrypts under the session vault
+// key, so it is per-circuit like ISessionVault) + stateless backup format facade. ---
+builder.Services.AddSingleton<IQueryBackupService, QueryBackupService>();
+builder.Services.AddScoped<IQueryStore, QueryStore>();
+
 // --- SQL editor: scoped per circuit (schema cache lives in the ViewModel). ---
 builder.Services.AddScoped<IToastService, ToastService>();
 builder.Services.AddScoped<ISqlEditorService, SqlEditorService>();
@@ -46,12 +70,49 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-app.UseHttpsRedirection();
+
+#if !DESKTOP
+// Https redirect only when an https endpoint actually exists; without a
+// cert it would 500 every redirect.
+var hasHttpsEndpoint =
+    (configuredUrls ?? string.Empty).Contains("https://", StringComparison.OrdinalIgnoreCase)
+    || builder.Configuration.GetSection("Kestrel:Endpoints").GetChildren()
+        .Any(e => (e["Url"] ?? string.Empty).StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+if (hasHttpsEndpoint)
+    app.UseHttpsRedirection();
+#endif
 
 app.UseAntiforgery();
 
+#if DESKTOP
+// Single-file exe: assets are embedded (see EmbeddedSiteFileProvider).
+// blazor.web.js and the circuit endpoints come from MapRazorComponents.
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new DbManager.Desktop.EmbeddedSiteFileProvider(typeof(App).Assembly),
+});
+#else
 app.MapStaticAssets();
+#endif
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
+#if DESKTOP
+await app.StartAsync();
+var url = app.Services.GetRequiredService<IServer>()
+    .Features.Get<IServerAddressesFeature>()!.Addresses.First();
+
+var window = new PhotinoWindow()
+    .SetTitle("DB Manager")
+    .SetUseOsDefaultSize(false)
+    .SetSize(1440, 900)
+    .Center()
+    .SetGrantBrowserPermissions(true)
+    .Load(url);
+
+window.WaitForClose();
+await app.StopAsync();
+#else
+Console.WriteLine($"DB Manager listening on: {string.Join(", ", app.Urls)}");
 app.Run();
+#endif

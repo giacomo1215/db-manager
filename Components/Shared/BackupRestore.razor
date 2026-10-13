@@ -7,6 +7,7 @@
 @inject IVaultService Vault
 @inject IBackupService Backup
 @inject ISessionVault SessionVault
+@inject IQueryStore QueryStore
 @inject IToastService Toasts
 @inject IJSRuntime JS
 
@@ -245,7 +246,13 @@
                         : (Ok: false, Key: Array.Empty<byte>(), Profiles: new List<ConnectionProfile>(), Error: error));
                 if (!unlocked.Ok)
                     throw new InvalidOperationException("The restored vault could not be re-read.");
+
+                // The restored vault introduces a new key: re-encrypt the saved-query
+                // library from the old key to the new one so it stays readable.
+                var oldKey = SessionVault.DerivedKey;
                 SessionVault.Unlock(unlocked.Key, unlocked.Profiles);
+                if (oldKey is not null)
+                    await Task.Run(() => QueryStore.Reencrypt(oldKey, unlocked.Key));
 
                 Toasts.Show("Restore",
                     $"Vault restored — {unlocked.Profiles.Count} connection(s). The master password is now the backup's.",

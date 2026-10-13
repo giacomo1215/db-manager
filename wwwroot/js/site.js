@@ -48,6 +48,17 @@ window.dbmSite = (() => {
         // restyles the whole app instantly. NO location.reload() here — a
         // reload tears down the circuit, and the vault unlock state is
         // circuit-scoped (SessionVault), so it would lock the user out.
+        // Native <dialog> helpers: showModal() gives the modal + ::backdrop that
+        // a plain "open" attribute cannot. Guarded so a double call never throws.
+        openDialog: (id) => {
+            const el = document.getElementById(id);
+            if (el && !el.open) el.showModal();
+        },
+        closeDialog: (id) => {
+            const el = document.getElementById(id);
+            if (el && el.open) el.close();
+        },
+
         toggleTheme: () => {
             const next = localStorage.getItem(KEY) === 'dark' ? 'light' : 'dark';
             localStorage.setItem(KEY, next);

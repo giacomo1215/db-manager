@@ -7,12 +7,62 @@
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
   </PropertyGroup>
 
+  <!-- Two releases from one codebase: DbManagerMode=Desktop (Photino window,
+       no console) or Server (console LAN host). Set by the publish profile.
+       Separate obj dirs: DefineConstants changes alone don't reliably
+       invalidate incremental builds. -->
+  <PropertyGroup Condition="'$(DbManagerMode)' == 'Desktop'">
+    <OutputType>WinExe</OutputType>
+    <DefineConstants>$(DefineConstants);DESKTOP</DefineConstants>
+    <AssemblyName>DbManager</AssemblyName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(DbManagerMode)' == 'Server'">
+    <AssemblyName>DbManager.Server</AssemblyName>
+  </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.7" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="MySqlConnector" Version="2.6.2" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Photino.NET" Version="4.0.16" />
   </ItemGroup>
+
+  <!-- Desktop release: embed every static asset into the assembly. A single-
+       file exe redirects AppContext.BaseDirectory to a random extraction dir,
+       so the on-disk static web assets manifest used by MapStaticAssets can
+       never be found; Program.cs serves these resources through
+       EmbeddedSiteFileProvider instead. Resource names carry the web route
+       after the "site/" prefix; RecursiveDir uses '\' and is normalized at
+       runtime.
+       These must be plain evaluation-time items: the resource input list is
+       snapshotted in _GenerateCompileInputs, which runs before any
+       BeforeTargets="CoreCompile" target, so items added from targets never
+       reach the compiler. -->
+  <ItemGroup Condition="'$(DbManagerMode)' == 'Desktop'">
+    <EmbeddedResource Include="wwwroot\**\*.*" LogicalName="site/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="Components\**\*.razor.js" LogicalName="site/Components/%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Blazor's client bootstrap script. Normal publishes copy it into
+         wwwroot\_framework from the internal-assets pack; the single-file
+         desktop exe has no wwwroot, so embed it. The pack's build targets
+         set BlazorFrameworkStaticWebAssetRoot to its _framework directory. -->
+    <EmbeddedResource Include="$(BlazorFrameworkStaticWebAssetRoot)\blazor.web.js"
+                      LogicalName="site/_framework/blazor.web.js" />
+  </ItemGroup>
+  <!-- The scoped CSS bundle must be embedded like the other assets, but the
+     resource input list is snapshotted in _GenerateCompileInputs, and the
+     SDK normally produces the bundle only after CoreCompile. Generate it
+     early and add the resource before that snapshot: scoped css processing
+     only needs the .razor.css sources, not compilation outputs. -->
+  <Target Name="EmbedScopedCssBundle"
+          Condition="'$(DbManagerMode)' == 'Desktop'"
+          BeforeTargets="_GenerateCompileInputs"
+          DependsOnTargets="BundleScopedCssFiles">
+    <ItemGroup>
+      <EmbeddedResource Include="$(IntermediateOutputPath)scopedcss\bundle\$(AssemblyName).styles.css"
+                        LogicalName="site/$(AssemblyName).styles.css" />
+    </ItemGroup>
+  </Target>
 
 </Project>

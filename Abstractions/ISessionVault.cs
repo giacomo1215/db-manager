@@ -15,6 +15,14 @@ namespace DbManager.Abstractions
     {
         bool IsUnlocked { get; }
 
+        /// <summary>
+        /// The derived AES key, or null while locked. Exposed for the saved-query
+        /// store, which encrypts query text under the same session key. READ-ONLY:
+        /// callers must not mutate or retain it beyond the call — SessionVault
+        /// zeroes it on Lock/Dispose.
+        /// </summary>
+        byte[]? DerivedKey { get; }
+
         /// <summary>Decrypted profiles. Empty while locked.</summary>
         List<ConnectionProfile> Profiles { get; }
 

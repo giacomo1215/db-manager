@@ -23,6 +23,8 @@ namespace DbManager.Services
 
         public bool IsUnlocked => _key is not null;
 
+        public byte[]? DerivedKey => _key;
+
         public List<ConnectionProfile> Profiles => _profiles;
 
         public ConnectionProfile? GetProfile(Guid id) =>
