@@ -324,6 +324,107 @@
     border-radius: 10px;
 }
 
+/* ---------------- First-run setup blocker ---------------- */
+
+.setup-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(0, 0, 0, .55);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+}
+
+.setup-card {
+    width: min(480px, 100%);
+    max-height: 90dvh;
+    overflow-y: auto;
+    padding: 1.6rem;
+    border-radius: 18px;
+    border: 1px solid var(--dbm-border);
+    background: linear-gradient(160deg, var(--dbm-glass-strong), var(--dbm-glass));
+    box-shadow: var(--dbm-shadow);
+    color: var(--dbm-text);
+}
+
+.setup-head {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    margin-bottom: .8rem;
+}
+
+.setup-head .bi {
+    font-size: 1.4rem;
+    color: var(--dbm-accent);
+}
+
+.setup-title {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin: 0;
+}
+
+.setup-text {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: .86rem;
+    line-height: 1.5;
+    color: var(--dbm-text-dim);
+    margin: 0 0 .8rem;
+}
+
+.setup-steps {
+    margin: 0 0 1rem;
+    padding-left: 1.1rem;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-size: .84rem;
+    line-height: 1.5;
+    color: var(--dbm-text-dim);
+}
+
+.setup-steps li {
+    margin-bottom: .5rem;
+}
+
+.setup-card code {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: .78rem;
+    color: var(--dbm-text);
+    background: var(--dbm-glass-strong);
+    padding: .05rem .3rem;
+    border-radius: 5px;
+}
+
+.setup-cmd {
+    margin: .4rem 0 0;
+    padding: .5rem .6rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: .75rem;
+    line-height: 1.45;
+    color: var(--dbm-text-dim);
+    background: rgba(0, 0, 0, .28);
+    border: 1px solid var(--dbm-border);
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.setup-details {
+    margin-bottom: 1rem;
+}
+
+.setup-details summary {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: .78rem;
+    color: var(--dbm-text-faint);
+    cursor: pointer;
+}
+
 /* ---------------- Restore (rare path, collapsed) ---------------- */
 
 .restore-toggle {
