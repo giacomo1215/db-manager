@@ -134,6 +134,48 @@
             AES-256-GCM · PBKDF2-SHA512 · vault stays on this machine
         </p>
     </div>
+
+    @* First-run deployment blocker: the vault could not be written because the
+       account running the app has no write access to the file's folder (under
+       IIS this is the web-process profile). Raw path alone is not actionable,
+       so give the operator the fix. *@
+    @if (_setupIssue is not null)
+    {
+        <div class="setup-overlay" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+            <div class="setup-card">
+                <div class="setup-head">
+                    <i class="bi bi-shield-exclamation" aria-hidden="true"></i>
+                    <h2 id="setup-title" class="setup-title">Vault storage not writable</h2>
+                </div>
+                <p class="setup-text">
+                    DB Manager could not create the vault because the account
+                    running the app is not allowed to write the file. Under IIS
+                    this is usually the web-process profile, e.g.
+                    <code>C:\Windows\system32\config\systemprofile</code>.
+                </p>
+                <p class="setup-text">To fix, on the server:</p>
+                <ol class="setup-steps">
+                    <li>
+                        Point <code>ConnectionStore:Path</code> and
+                        <code>QueryStore:Path</code> (appsettings.json) at a writable
+                        folder, e.g. the site's <code>App_Data</code>.
+                    </li>
+                    <li>
+                        Grant the app-pool identity write access:
+                        <pre class="setup-cmd">icacls "&lt;folder&gt;" /grant "IIS AppPool\&lt;pool&gt;:(OI)(CI)M"</pre>
+                    </li>
+                    <li>Recycle the app pool, then reload this page.</li>
+                </ol>
+                <details class="setup-details">
+                    <summary>Details</summary>
+                    <pre class="setup-cmd">@_setupIssue</pre>
+                </details>
+                <button type="button" class="btn-key" @onclick="() => _setupIssue = null">
+                    <i class="bi bi-check2 me-2" aria-hidden="true"></i><span>Got it</span>
+                </button>
+            </div>
+        </div>
+    }
 </section>
 
 @code {
@@ -145,6 +187,7 @@
     private string _password = string.Empty;
     private string _password2 = string.Empty;
     private string? _error;
+    private string? _setupIssue;
 
     private string PasswordInputType => _showPassword ? "text" : "password";
 
@@ -165,6 +208,7 @@
         if (_busy)
             return;
         _error = null;
+        _setupIssue = null;
 
         try
         {
@@ -199,7 +243,17 @@
         catch (Exception ex)
         {
             // Vault file IO (permissions, disk full) must not kill the circuit.
-            _error = $"Could not open the vault: {ex.Message}";
+            if (IsAccessDenied(ex))
+            {
+                // First run inside IIS: the app-pool identity cannot write the
+                // vault. That is a deployment fix, not a wrong password, so it
+                // gets remediation steps instead of the raw path alone.
+                _setupIssue = ex.Message;
+            }
+            else
+            {
+                _error = $"Could not open the vault: {ex.Message}";
+            }
             Shake();
             return;
         }
@@ -222,6 +276,15 @@
             return "The two passwords do not match.";
         return null;
     }
+
+    /// <summary>
+    /// True for filesystem permission failures — the app-pool identity lacking
+    /// write access on the vault path. Win32 ERROR_ACCESS_DENIED (5) is carried
+    /// in the low word of IOException.HResult (0x80070005).
+    /// </summary>
+    private static bool IsAccessDenied(Exception ex) =>
+        ex is UnauthorizedAccessException
+        || (ex is IOException io && (io.HResult & 0xFFFF) == 5);
 
     /// <summary>Wrong password → the panel shakes once, then the class drops.</summary>
     private void Shake()
