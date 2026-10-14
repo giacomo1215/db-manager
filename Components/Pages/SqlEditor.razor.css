@@ -341,52 +341,6 @@
     font-size: 0.9rem;
 }
 
-/* Grid: sticky header row stays visible while scrolling vertically; cells
-   truncate with a title tooltip (rendered on the span) for long values. */
-.sql-grid {
-    width: max-content; /* wide results grow horizontally, not squashed */
-    border-collapse: collapse;
-    font-size: 0.82rem;
-    font-family: var(--bs-font-monospace);
-}
-
-.sql-grid th {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    /* Opaque: rows scroll under the header and must not show through. */
-    background-color: var(--dbm-panel-solid);
-    color: var(--dbm-text);
-    padding: 4px 10px;
-    border-bottom: 2px solid var(--dbm-border-strong);
-    white-space: nowrap;
-    text-align: left;
-}
-
-.sql-grid td {
-    padding: 3px 10px;
-    border-bottom: 1px solid var(--dbm-border);
-    white-space: nowrap;
-    max-width: 360px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.sql-grid tbody tr:hover td {
-    background-color: var(--dbm-glass-strong);
-}
-
-/* SSMS-style right-aligned numerics with tabular digits. */
-.sql-grid .num {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-}
-
-.sql-null {
-    color: var(--dbm-text-dim);
-    font-style: italic;
-}
-
 .sql-results-footer {
     flex: 0 0 auto;
     padding: 3px 10px;

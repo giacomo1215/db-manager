@@ -1,12 +1,10 @@
-// Theme persistence for db-manager. The <html data-bs-theme> attribute is set
-// pre-paint by the inline script in App.razor (reads the same key) so a dark
-// session never flashes light on reload. Monaco picks vs/vs-dark from
-// getTheme() at editor init.
+// Theme helpers for db-manager. The <html data-bs-theme> attribute is rendered
+// SERVER-side from the persisted preference (App.razor), so there is never a
+// flash and the login page is themed too. Monaco picks vs/vs-dark from this same
+// attribute at editor init. Nothing here touches localStorage anymore.
 window.dbmSite = (() => {
-    const KEY = 'dbm.theme';
-
     return {
-        getTheme: () => localStorage.getItem(KEY) === 'dark' ? 'dark' : 'light',
+        getTheme: () => document.documentElement.getAttribute('data-bs-theme') === 'dark' ? 'dark' : 'light',
 
         // Blob download for backups/exports. Blazor can't trigger a "Save as"
         // itself, so the server hands the text over the circuit and the
@@ -48,6 +46,16 @@ window.dbmSite = (() => {
         // restyles the whole app instantly. NO location.reload() here — a
         // reload tears down the circuit, and the vault unlock state is
         // circuit-scoped (SessionVault), so it would lock the user out.
+        // Persistence is the caller's job (MainLayout/Settings write the
+        // setting to the SQLite store); this only applies it to the DOM and
+        // keeps Monaco in sync so the two can never disagree.
+        applyTheme: (next) => {
+            document.documentElement.setAttribute('data-bs-theme', next === 'dark' ? 'dark' : 'light');
+            // Monaco picks vs/vs-dark once at editor init; flip it live too.
+            // The engine only exists after the SQL editor page was opened.
+            if (window.dbSqlEditor) dbSqlEditor.setTheme(next === 'dark');
+        },
+
         // Native <dialog> helpers: showModal() gives the modal + ::backdrop that
         // a plain "open" attribute cannot. Guarded so a double call never throws.
         openDialog: (id) => {
@@ -57,15 +65,6 @@ window.dbmSite = (() => {
         closeDialog: (id) => {
             const el = document.getElementById(id);
             if (el && el.open) el.close();
-        },
-
-        toggleTheme: () => {
-            const next = localStorage.getItem(KEY) === 'dark' ? 'light' : 'dark';
-            localStorage.setItem(KEY, next);
-            document.documentElement.setAttribute('data-bs-theme', next);
-            // Monaco picks vs/vs-dark once at editor init; flip it live too.
-            // The engine only exists after the SQL editor page was opened.
-            if (window.dbSqlEditor) dbSqlEditor.setTheme(next === 'dark');
         }
     };
 })();

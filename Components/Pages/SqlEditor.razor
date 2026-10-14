@@ -429,41 +429,10 @@
                         else
                         {
                             var table = result.ResultSets[Math.Min(tab.ActiveResultTab, result.ResultSets.Count - 1)];
-                            <table class="sql-grid">
-                                <thead>
-                                    <tr>
-                                        @foreach (DataColumn col in table.Columns)
-                                        {
-                                            <th class="@(IsNumericType(col.DataType) ? "num" : "")">@col.ColumnName</th>
-                                        }
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    @* Virtualize: a quick SELECT on a big table can be
-                                       thousands of rows; only the visible slice renders. *@
-                                    <Virtualize Items="GetRows(table)" ItemSize="28" OverscanCount="5">
-                                        <tr>
-                                            @{
-                                                var row = context as DataRow;
-                                                foreach (DataColumn col in table.Columns)
-                                                {
-                                                    var value = row![col];
-                                                    <td class="@(IsNumericType(col.DataType) ? "num" : "")">
-                                                        @if (value is DBNull or null)
-                                                        {
-                                                            <em class="sql-null">NULL</em>
-                                                        }
-                                                        else
-                                                        {
-                                                            <span title="@value.ToString()">@value</span>
-                                                        }
-                                                    </td>
-                                                }
-                                            }
-                                        </tr>
-                                    </Virtualize>
-                                </tbody>
-                            </table>
+                            @* @key on the DataTable instance: a re-run produces a new
+                               table, which recreates the grid and resets its sort,
+                               filter and column-width state. *@
+                            <ResultGrid @key="table" Table="table" ResultIndex="tab.ActiveResultTab" />
                         }
                     </div>
                     <div class="sql-results-footer">
@@ -1012,15 +981,6 @@
 
     private string EngineName(string engineKey) =>
         Registry.Resolve(engineKey)?.DisplayName ?? engineKey;
-
-    /// <summary>Rows as a plain list so <c>Virtualize</c> gets an indexable collection.</summary>
-    private static List<DataRow> GetRows(DataTable table) => table.Rows.Cast<DataRow>().ToList();
-
-    /// <summary>Right-align numerics like SSMS; the column type decides the alignment.</summary>
-    private static bool IsNumericType(Type type) =>
-        type == typeof(byte) || type == typeof(sbyte) || type == typeof(short) || type == typeof(ushort)
-        || type == typeof(int) || type == typeof(uint) || type == typeof(long) || type == typeof(ulong)
-        || type == typeof(float) || type == typeof(double) || type == typeof(decimal);
 
     /// <summary>
     /// Inline style for the results pane: flex-basis carries the divider position.

@@ -1,6 +1,8 @@
 @inherits LayoutComponentBase
 @inject NavigationManager Navigation
 @inject ISessionVault SessionVault
+@inject IPreferenceStore Prefs
+@inject IJSRuntime JS
 
 <div class="page">
     @* No navbar-light/bg-light: those classes force the light look even when
@@ -28,14 +30,14 @@
             </ul>
 
             <div class="ms-auto d-flex align-items-center gap-2">
-                @* Live theme flip (site.js): one data-bs-theme swap restyles
-                   the app via CSS vars. Never a reload — the vault unlock
-                   state is circuit-scoped, so a reload locks the user out. *@
+                @* Live theme flip: persist the new choice to the SQLite store,
+                   then apply it to the DOM via site.js. Never a reload — the
+                   vault unlock state is circuit-scoped, so a reload would lock
+                   the user out. Icons swap purely via data-bs-theme CSS. *@
                 <button type="button" class="btn btn-sm btn-outline-secondary" title="Toggle theme"
-                        aria-label="Toggle theme" onclick="dbmSite.toggleTheme()">
-                    @* Icons swap purely via data-bs-theme CSS — no JS bookkeeping. *@
-                    <i class="bi bi-moon-stars theme-icon-light"></i>
-                    <i class="bi bi-sun-fill theme-icon-dark"></i>
+                        aria-label="Toggle theme" @onclick="ToggleThemeAsync">
+                    <i class="bi bi-moon-stars theme-moon"></i>
+                    <i class="bi bi-sun-fill theme-sun"></i>
                 </button>
                 @if (SessionVault.IsUnlocked)
                 {
@@ -58,6 +60,13 @@
 <Toasts />
 
 @code {
+    private async Task ToggleThemeAsync()
+    {
+        var next = Prefs.Theme == "dark" ? "light" : "dark";
+        Prefs.Theme = next; // persisted to the SQLite store
+        await JS.InvokeVoidAsync("dbmSite.applyTheme", next);
+    }
+
     private void Lock()
     {
         SessionVault.Lock();

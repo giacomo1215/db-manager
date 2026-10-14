@@ -1,6 +1,8 @@
 @page "/settings"
 @inject ISettingsService Prefs
+@inject IPreferenceStore AppPrefs
 @inject IToastService Toasts
+@inject IJSRuntime JS
 
 <PageTitle>Settings — db-manager</PageTitle>
 
@@ -33,9 +35,56 @@
             </div>
         </div>
     </div>
+
+    <div class="col-12 col-lg-7">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title mb-3"><i class="bi bi-palette me-2"></i>Appearance</h5>
+
+                @* Theme is stored in the SQLite store's plaintext settings table
+                   and rendered server-side on <html data-bs-theme>, so the choice
+                   survives restarts and applies before the first paint. *@
+                <div class="d-flex flex-row gap-3 align-items-center">
+                    <label class="form-check-label">
+                        <input class="form-check-input me-1" type="radio" name="theme"
+                               value="light" checked="@(_theme == "light")" @onchange="OnThemeChanged" />
+                        Light
+                    </label>
+                    <label class="form-check-label">
+                        <input class="form-check-input me-1" type="radio" name="theme"
+                               value="dark" checked="@(_theme == "dark")" @onchange="OnThemeChanged" />
+                        Dark
+                    </label>
+                </div>
+                <p class="text-body-secondary small mt-2 mb-0">
+                    Applies immediately across the whole app, including the editor and
+                    the login page.
+                </p>
+            </div>
+        </div>
+    </div>
 </div>
 
 @code {
+    private string _theme = "light";
+
+    protected override void OnInitialized() => _theme = AppPrefs.Theme;
+
+    private async Task OnThemeChanged(ChangeEventArgs e)
+    {
+        var next = e.Value?.ToString() == "dark" ? "dark" : "light";
+        _theme = next;
+        try
+        {
+            AppPrefs.Theme = next; // persisted to the SQLite store
+            await JS.InvokeVoidAsync("dbmSite.applyTheme", next);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Could not save theme", ex.Message, ToastKind.Danger);
+        }
+    }
+
     private void OnExecuteSelectionChanged(ChangeEventArgs e)
     {
         var enabled = e.Value is bool b && b;

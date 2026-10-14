@@ -1,0 +1,405 @@
+@using System.Data
+@using DbManager.Services
+@inject IJSRuntime JS
+@inject IToastService Toasts
+
+@* One result set as an interactive grid: resizable/auto-fit columns, cell
+   copy, click-to-sort headers, per-column filters and export. State (sort,
+   filter, widths) is reset per result set by the @key on the call site. *@
+
+<div class="dbm-grid-root">
+    <div class="dbm-grid-toolbar">
+        <button type="button" class="dbm-grid-tool @(_showFilters ? "active" : "")"
+                title="Toggle column filters" @onclick="() => _showFilters = !_showFilters">
+            <i class="bi bi-funnel"></i>
+            @if (_activeFilterCount > 0)
+            {
+                <span class="dbm-grid-badge">@_activeFilterCount</span>
+            }
+        </button>
+        <button type="button" class="dbm-grid-tool" title="Reset sort and filters"
+                disabled="@(!HasSort && !HasFilter)" @onclick="ResetView">
+            <i class="bi bi-arrow-counterclockwise"></i>
+        </button>
+        <span class="dbm-grid-toolbar-info">
+            @_view.Count row@(_view.Count == 1 ? "" : "s")@(HasFilter ? $" of {_baseRows.Count}" : "")
+        </span>
+        <span class="dbm-grid-toolbar-spacer"></span>
+        <div class="dbm-grid-export">
+            <button type="button" class="dbm-grid-tool" @onclick="() => _menuOpen = !_menuOpen"
+                    title="Export the current view">
+                <i class="bi bi-download me-1"></i>Export
+            </button>
+            @if (_menuOpen)
+            {
+                <div class="dbm-grid-menu">
+                    @* Export scope: raw results by default; opt in to the on-screen
+                       order/filters. Applies to every format. *@
+                    <label class="dbm-grid-menu-option" title="Off: the untouched rows from the query. On: the rows as displayed, with filters and sorting applied.">
+                        <input type="checkbox" @bind="_exportAsViewed" />
+                        <span>Apply filters &amp; sort</span>
+                    </label>
+                    <div class="dbm-grid-menu-sep"></div>
+                    <button type="button" @onclick='() => BeginExportAsync("csv")'><i class="bi bi-filetype-csv me-2"></i>CSV</button>
+                    <button type="button" @onclick='() => BeginExportAsync("txt")'><i class="bi bi-filetype-txt me-2"></i>Tab-separated TXT</button>
+                    <button type="button" @onclick='() => BeginExportAsync("json")'><i class="bi bi-filetype-json me-2"></i>JSON</button>
+                    <button type="button" @onclick='() => BeginExportAsync("xml")'><i class="bi bi-filetype-xml me-2"></i>XML</button>
+                </div>
+            }
+        </div>
+    </div>
+
+    @if (_menuOpen)
+    {
+        @* Click-anywhere backdrop so the export menu closes on an outside click. *@
+        <div class="dbm-grid-menu-backdrop" @onclick="() => _menuOpen = false"></div>
+    }
+
+    <div class="dbm-grid-scroll">
+        <table id="@_gridId" class="dbm-grid" style="@TableStyle()">
+            <colgroup>
+                @foreach (var w in _colWidths)
+                {
+                    <col style="@($"width: {w.ToString(System.Globalization.CultureInfo.InvariantCulture)}px")" />
+                }
+            </colgroup>
+            <thead>
+                <tr class="dbm-grid-head">
+                    @for (var i = 0; i < _columns.Count; i++)
+                    {
+                        var index = i;
+                        <th class="dbm-th @(IsNumericType(_columns[index].DataType) ? "num" : "")">
+                            <span class="dbm-th-label" title="Click to sort" @onclick="() => SortBy(index)">
+                                <span class="dbm-th-text">@_columns[index].ColumnName</span>
+                                @if (_sortCol == index)
+                                {
+                                    <i class="bi @(_sortDesc ? "bi-caret-down-fill" : "bi-caret-up-fill") dbm-sort-caret"></i>
+                                }
+                            </span>
+                            @* Drag to resize; double-click to fit the longest content. *@
+                            <span class="dbm-col-resize" title="Drag to resize — double-click to fit content"
+                                  @ondblclick="() => AutofitAsync(index)"></span>
+                        </th>
+                    }
+                </tr>
+                @if (_showFilters)
+                {
+                    <tr class="dbm-grid-filter-row">
+                        @for (var i = 0; i < _columns.Count; i++)
+                        {
+                            var index = i;
+                            <th>
+                                <input type="text" class="dbm-grid-filter" placeholder="Filter…"
+                                       @bind="_filters[index]" @bind:event="oninput" @bind:after="Rebuild" />
+                            </th>
+                        }
+                    </tr>
+                }
+            </thead>
+            <tbody>
+                @* Virtualize: only the visible slice renders, so a SELECT returning
+                   thousands of rows stays fast. SpacerElement="tr" keeps the scroll
+                   spacer valid inside a table under fixed layout. *@
+                <Virtualize Items="_view" ItemSize="28" OverscanCount="5" SpacerElement="tr" Context="row">
+                    <tr>
+                        @for (var i = 0; i < _columns.Count; i++)
+                        {
+                            var index = i;
+                            var value = row[index];
+                            <td class="@(IsNumericType(_columns[index].DataType) ? "num" : "")"
+                                title="@Display(value)" @ondblclick="() => CopyCellAsync(value)">
+                                @if (value is DBNull or null)
+                                {
+                                    <em class="dbm-null">NULL</em>
+                                }
+                                else
+                                {
+                                    <span>@value</span>
+                                }
+                            </td>
+                        }
+                    </tr>
+                </Virtualize>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@* Header-inclusion prompt — CSV and TXT only (JSON/XML always carry names). *@
+<dialog id="@_dialogId" class="dbm-export-dialog">
+    <div class="dbm-export-dialog-body">
+        <h6 class="mb-3"><i class="bi bi-download me-2"></i>Export as @_pendingFormat.ToUpperInvariant()</h6>
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="@(_dialogId + "-headers")"
+                   checked="@_includeHeaders" @onchange="OnHeadersToggled" />
+            <label class="form-check-label" for="@(_dialogId + "-headers")">Include column headers</label>
+        </div>
+        <div class="d-flex flex-row justify-content-end gap-2 mt-3">
+            <button type="button" class="btn btn-sm btn-primary" @onclick="ConfirmExportAsync">Export</button>
+            <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelExportAsync">Cancel</button>
+        </div>
+    </div>
+</dialog>
+
+@code {
+    [Parameter, EditorRequired] public DataTable Table { get; set; } = default!;
+
+    /// <summary>Zero-based index of this result set (used in the export file name).</summary>
+    [Parameter] public int ResultIndex { get; set; }
+
+    private readonly string _gridId = "dbm-grid-" + Guid.NewGuid().ToString("N");
+    private readonly string _dialogId = "dbm-export-" + Guid.NewGuid().ToString("N");
+
+    private DotNetObjectReference<ResultGrid>? _dotnetRef;
+
+    private readonly List<DataColumn> _columns = [];
+    private List<DataRow> _baseRows = [];
+    private List<DataRow> _view = [];
+    private double[] _colWidths = [];
+    private string[] _filters = [];
+    private string[] _longest = [];
+
+    private int _sortCol = -1;
+    private bool _sortDesc;
+    private bool _showFilters;
+    private bool _menuOpen;
+
+    private string _pendingFormat = "";
+    private bool _includeHeaders = true;
+
+    // Export scope. Default false = the raw query results (original order, no
+    // filtering); true = exactly what the grid shows.
+    private bool _exportAsViewed;
+
+    private bool HasFilter => _activeFilterCount > 0;
+    private bool HasSort => _sortCol >= 0;
+    private int _activeFilterCount;
+
+    protected override void OnInitialized()
+    {
+        foreach (DataColumn col in Table.Columns)
+            _columns.Add(col);
+
+        _baseRows = Table.Rows.Cast<DataRow>().ToList();
+        _filters = new string[_columns.Count];
+        _longest = new string[_columns.Count];
+        _colWidths = new double[_columns.Count];
+
+        for (var i = 0; i < _columns.Count; i++)
+        {
+            // Initial width from the header; the user can auto-fit any column.
+            var header = _columns[i].ColumnName;
+            _colWidths[i] = Clamp(header.Length * 8 + 28, 80, 320);
+
+            var longest = header;
+            foreach (var row in _baseRows)
+            {
+                var text = Display(row[i]);
+                if (text.Length > longest.Length)
+                    longest = text;
+            }
+            _longest[i] = longest;
+        }
+
+        Rebuild();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+        _dotnetRef = DotNetObjectReference.Create(this);
+        await JS.InvokeVoidAsync("dbResultGrid.initResize", _gridId, _dotnetRef);
+    }
+
+    // ---------------- Sorting / filtering ----------------
+
+    /// <summary>Clears sorting and every column filter, restoring the raw result order.</summary>
+    private void ResetView()
+    {
+        _sortCol = -1;
+        _sortDesc = false;
+        _filters = new string[_columns.Count];
+        Rebuild();
+    }
+
+    private void SortBy(int index)
+    {
+        if (_sortCol != index)
+        {
+            _sortCol = index;
+            _sortDesc = false;
+        }
+        else if (!_sortDesc)
+        {
+            _sortDesc = true;
+        }
+        else
+        {
+            _sortCol = -1; // third click clears the sort
+            _sortDesc = false;
+        }
+        Rebuild();
+    }
+
+    private void Rebuild()
+    {
+        IEnumerable<DataRow> query = _baseRows;
+        _activeFilterCount = 0;
+        for (var i = 0; i < _filters.Length; i++)
+        {
+            var filter = _filters[i];
+            if (string.IsNullOrEmpty(filter))
+                continue;
+            _activeFilterCount++;
+            var index = i;
+            query = query.Where(row => Display(row[index]).Contains(filter, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var list = query.ToList();
+        if (_sortCol >= 0)
+        {
+            var col = _sortCol;
+            var desc = _sortDesc;
+            list.Sort((a, b) =>
+            {
+                var c = Compare(a[col], b[col]);
+                return desc ? -c : c;
+            });
+        }
+        _view = list;
+    }
+
+    /// <summary>Type-aware comparison; NULLs sort last, uncomparable pairs fall back to text.</summary>
+    private static int Compare(object? a, object? b)
+    {
+        var aNull = a is null or DBNull;
+        var bNull = b is null or DBNull;
+        if (aNull && bNull) return 0;
+        if (aNull) return 1;
+        if (bNull) return -1;
+        if (a is IComparable cmp && a.GetType() == b!.GetType())
+        {
+            try { return cmp.CompareTo(b); }
+            catch (ArgumentException) { /* fall through to text */ }
+        }
+        return string.Compare(Display(a), Display(b), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ---------------- Column sizing ----------------
+
+    [JSInvokable]
+    public Task OnColumnResized(int index, double width)
+    {
+        if (index >= 0 && index < _colWidths.Length)
+        {
+            _colWidths[index] = Clamp(width, 40, 1600);
+            StateHasChanged();
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Double-click a column edge: measure the widest content in the column
+    /// (header + longest cell, computed in C# over the full data set) via an
+    /// offscreen canvas in JS — the virtualized DOM only holds visible rows.
+    /// </summary>
+    private async Task AutofitAsync(int index)
+    {
+        var width = await JS.InvokeAsync<double>(
+            "dbResultGrid.autofit", _gridId, index, _columns[index].ColumnName, _longest[index]);
+        _colWidths[index] = Clamp(width, 40, 1600);
+        StateHasChanged();
+    }
+
+    private string TableStyle() =>
+        $"width: {_colWidths.Sum().ToString(System.Globalization.CultureInfo.InvariantCulture)}px";
+
+    private static double Clamp(double value, double min, double max) =>
+        Math.Min(max, Math.Max(min, value));
+
+    // ---------------- Cell copy ----------------
+
+    private async Task CopyCellAsync(object? value)
+    {
+        var text = Display(value);
+        if (text.Length == 0)
+            return;
+        var copied = await JS.InvokeAsync<bool>("dbResultGrid.copyText", text);
+        if (copied)
+            Toasts.Show("Copied", "Cell value copied to the clipboard.", ToastKind.Success, 2);
+    }
+
+    // ---------------- Export ----------------
+
+    private async Task BeginExportAsync(string format)
+    {
+        _menuOpen = false;
+        if (format is "csv" or "txt")
+        {
+            _pendingFormat = format;
+            await JS.InvokeVoidAsync("dbmSite.openDialog", _dialogId);
+            return;
+        }
+        await RunExportAsync(format, includeHeaders: true);
+    }
+
+    private void OnHeadersToggled(ChangeEventArgs e) =>
+        _includeHeaders = e.Value is bool b && b;
+
+    private async Task ConfirmExportAsync()
+    {
+        await JS.InvokeVoidAsync("dbmSite.closeDialog", _dialogId);
+        await RunExportAsync(_pendingFormat, _includeHeaders);
+    }
+
+    private Task CancelExportAsync() =>
+        JS.InvokeVoidAsync("dbmSite.closeDialog", _dialogId).AsTask();
+
+    private async Task RunExportAsync(string format, bool includeHeaders)
+    {
+        // Default is the raw result set; "Apply filters & sort" switches to the
+        // rows exactly as displayed.
+        var rows = _exportAsViewed ? _view : _baseRows;
+        var names = _columns.Select(c => c.ColumnName).ToList();
+        var (content, mime) = format switch
+        {
+            "csv" => (ResultExporter.ToCsv(names, rows, includeHeaders), "text/csv"),
+            "txt" => (ResultExporter.ToTxt(names, rows, includeHeaders), "text/plain"),
+            "json" => (ResultExporter.ToJson(names, rows), "application/json"),
+            _ => (ResultExporter.ToXml(names, rows), "application/xml")
+        };
+
+        var fileName = $"result{ResultIndex + 1}.{format}";
+        try
+        {
+            // Chunked: a single interop string would exceed the SignalR message
+            // cap (~32 KB) for any real result set.
+            await JS.InvokeVoidAsync("dbmSite.beginDownload", fileName, mime);
+            const int chunkSize = 16 * 1024;
+            for (var offset = 0; offset < content.Length; offset += chunkSize)
+            {
+                var length = Math.Min(chunkSize, content.Length - offset);
+                await JS.InvokeVoidAsync("dbmSite.appendDownloadChunk", content.Substring(offset, length));
+            }
+            await JS.InvokeVoidAsync("dbmSite.finishDownload");
+            Toasts.Show("Export", $"Downloaded {fileName} ({rows.Count} rows).", ToastKind.Success, 4);
+        }
+        catch (Exception ex)
+        {
+            await JS.InvokeVoidAsync("dbmSite.abortDownload");
+            Toasts.Show("Export failed", ex.Message, ToastKind.Danger);
+        }
+    }
+
+    // ---------------- Helpers ----------------
+
+    private static string Display(object? value) => ResultExporter.Display(value);
+
+    private static bool IsNumericType(Type type) =>
+        type == typeof(byte) || type == typeof(sbyte) || type == typeof(short) || type == typeof(ushort)
+        || type == typeof(int) || type == typeof(uint) || type == typeof(long) || type == typeof(ulong)
+        || type == typeof(float) || type == typeof(double) || type == typeof(decimal);
+
+    public void Dispose() => _dotnetRef?.Dispose();
+}
