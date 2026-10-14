@@ -659,6 +659,16 @@ window.dbSqlEditor = (() => {
 
         getValue: (divId) => findEditor(divId)?.getValue() ?? '',
 
+        // The currently highlighted text, or '' when the caret is collapsed
+        // (no selection). SSMS-style "run selection" reads this: a collapsed
+        // range yields '' so the caller falls back to the whole document.
+        getSelection: (divId) => {
+            const editor = findEditor(divId);
+            if (!editor) return '';
+            const selection = editor.getSelection();
+            return selection ? editor.getModel().getValueInRange(selection) : '';
+        },
+
         // --- Split-pane divider drag -------------------------------------------
         // The divider between editor and results. JS handles the drag directly
         // (pointer capture, style update) because routing every mousemove through

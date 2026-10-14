@@ -7,6 +7,7 @@
 @inject IQueryStore QueryStore
 @inject IDbConnectorRegistry Registry
 @inject IToastService Toasts
+@inject ISettingsService Settings
 @inject NavigationManager Navigation
 @implements IDisposable
 
@@ -774,14 +775,23 @@
 
     /// <summary>
     /// Reads the editor content and executes it — single entry point for the Run
-    /// button and the editor keybindings.
+    /// button and the editor keybindings. When "execute selection only" is on and
+    /// text is highlighted, only the selection runs (SSMS-style); otherwise the
+    /// whole document runs. The preference is read per run so a toggle in Settings
+    /// takes effect without a reload.
     /// </summary>
     private async Task RunQueryAsync()
     {
         if (!_editorReady || _isRunning)
             return;
 
-        var sql = await JS.InvokeAsync<string>("dbSqlEditor.getValue", EditorDivId);
+        var sql = Settings.Current.ExecuteSelectionOnly
+            ? await JS.InvokeAsync<string>("dbSqlEditor.getSelection", EditorDivId)
+            : string.Empty;
+
+        if (string.IsNullOrWhiteSpace(sql))
+            sql = await JS.InvokeAsync<string>("dbSqlEditor.getValue", EditorDivId);
+
         await ExecuteSqlAsync(sql);
     }
 
