@@ -131,13 +131,14 @@ body::after {
 
 /* ---------------- Theme toggle icon ---------------- */
 
-/* Sun in dark mode (click = go light), moon in light mode. Pure CSS — no JS
-   bookkeeping. */
-[data-bs-theme="light"] .theme-icon-light {
+/* Moon in light mode (click = go dark), sun in dark mode (click = go light).
+   Pure CSS — no JS bookkeeping. <html data-bs-theme> is always present
+   (server-rendered), so exactly one icon is ever visible. */
+[data-bs-theme="light"] .theme-sun {
     display: none;
 }
 
-[data-bs-theme="dark"] .theme-icon-dark {
+[data-bs-theme="dark"] .theme-moon {
     display: none;
 }
 

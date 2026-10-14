@@ -627,7 +627,7 @@ window.dbSqlEditor = (() => {
             viewStates.delete(tabKey);
         },
 
-        // Live theme flip, called by dbmSite.toggleTheme (which must not
+        // Live theme flip, called by dbmSite.applyTheme (which must not
         // reload the page — the vault session is circuit-scoped). Monaco
         // picked vs/vs-dark at init; this retints every mounted instance.
         // No-op when the engine was never downloaded (editor page unopened).

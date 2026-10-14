@@ -1,5 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+@inject DbManager.Abstractions.IPreferenceStore Prefs
+@* data-bs-theme is rendered SERVER-side from the persisted preference, so the
+   saved theme is applied to the very first paint (login page included) with no
+   flash. The interactive toggle in MainLayout updates the attribute live and
+   writes back through the same store. *@
+<html lang="en" data-bs-theme="@Prefs.Theme">
 
 <head>
     <meta charset="utf-8" />
@@ -17,9 +22,7 @@
     <link rel="stylesheet" href="@Assets["DbManager.styles.css"]" />
     <ImportMap />
     <link rel="icon" type="image/png" href="favicon.png" />
-    @* Pre-paint theme: applies the saved theme BEFORE first render so a dark
-       session never flashes light on reload. Keep in sync with js/site.js. *@
-    <script>document.documentElement.setAttribute('data-bs-theme', localStorage.getItem('dbm.theme') === 'dark' ? 'dark' : 'light');</script>
+    @* Theme is set server-side on <html> above — no pre-paint script needed. *@
     <HeadOutlet @rendermode="new InteractiveServerRenderMode(prerender: false)" />
 </head>
 
@@ -35,6 +38,9 @@
        match require.config paths in wwwroot/js/sql-editor.js. *@
     <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
     <script src="js/sql-editor.js"></script>
+    @* Results-grid helpers: column resize / auto-fit and clipboard. Plain DOM,
+       independent of the Monaco loader above. *@
+    <script src="js/result-grid.js"></script>
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>
 

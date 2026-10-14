@@ -195,6 +195,11 @@ namespace DbManager.Services
             EnsureSchema();
             var conn = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _dbPath }.ToString());
             conn.Open();
+            // WAL + a busy timeout let this store coexist with the singleton
+            // PreferenceStore, which writes the same file's settings table.
+            using var pragma = conn.CreateCommand();
+            pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;";
+            pragma.ExecuteNonQuery();
             return conn;
         }
 

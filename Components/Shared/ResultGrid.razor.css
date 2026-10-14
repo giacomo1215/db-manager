@@ -1,0 +1,293 @@
+/*
+ * Interactive results grid. Fixed table layout + an explicit total width so the
+ * <colgroup> widths (owned by C# state) are honoured exactly; the browser clips
+ * overflowing cells with an ellipsis instead of reflowing columns. Surfaces use
+ * the shared --dbm-* glass tokens (light/dark aware).
+ */
+
+.dbm-grid-root {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ---------------- Toolbar ---------------- */
+
+.dbm-grid-toolbar {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--dbm-border);
+    background-color: var(--dbm-panel-solid);
+    font-size: 0.78rem;
+}
+
+.dbm-grid-tool {
+    position: relative;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 2px 6px;
+    color: var(--dbm-text-dim);
+}
+
+.dbm-grid-tool:hover {
+    background-color: var(--dbm-glass-strong);
+    color: var(--dbm-text);
+}
+
+.dbm-grid-tool.active {
+    color: var(--dbm-accent-bright);
+    background-color: var(--dbm-glass-strong);
+}
+
+.dbm-grid-tool:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.dbm-grid-badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    min-width: 14px;
+    padding: 0 3px;
+    border-radius: 7px;
+    background-color: var(--dbm-accent);
+    color: var(--dbm-accent-ink);
+    font-size: 0.6rem;
+    line-height: 14px;
+    text-align: center;
+}
+
+.dbm-grid-toolbar-info {
+    margin-left: 0.35rem;
+    font-family: var(--bs-font-monospace);
+    font-size: 0.72rem;
+    color: var(--dbm-text-dim);
+}
+
+.dbm-grid-toolbar-spacer {
+    flex: 1 1 auto;
+}
+
+/* ---------------- Export menu ---------------- */
+
+.dbm-grid-export {
+    position: relative;
+}
+
+.dbm-grid-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    min-width: 12rem;
+    padding: 0.25rem;
+    border: 1px solid var(--dbm-border-strong);
+    border-radius: 8px;
+    background-color: var(--dbm-panel-solid);
+    box-shadow: var(--dbm-shadow);
+}
+
+.dbm-grid-menu button {
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8rem;
+    color: var(--dbm-text);
+    white-space: nowrap;
+}
+
+.dbm-grid-menu button:hover {
+    background-color: var(--dbm-glass-strong);
+}
+
+/* "Apply filters & sort" scope toggle at the top of the menu. */
+.dbm-grid-menu-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.78rem;
+    color: var(--dbm-text-dim);
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.dbm-grid-menu-option input {
+    margin: 0;
+}
+
+.dbm-grid-menu-sep {
+    height: 1px;
+    margin: 0.25rem;
+    background-color: var(--dbm-border);
+}
+
+/* Transparent full-screen layer that closes the menu on an outside click. */
+.dbm-grid-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+}
+
+/* ---------------- Scroll container + table ---------------- */
+
+.dbm-grid-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+}
+
+.dbm-grid {
+    table-layout: fixed; /* colgroup widths win; cells clip with an ellipsis */
+    width: 100%;         /* overridden inline with the exact sum of column widths */
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    font-family: var(--bs-font-monospace);
+}
+
+.dbm-grid thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    height: 28px;
+    padding: 0;
+    /* Opaque: rows scroll under the header and must not show through. */
+    background-color: var(--dbm-panel-solid);
+    color: var(--dbm-text);
+    border-bottom: 2px solid var(--dbm-border-strong);
+    white-space: nowrap;
+    text-align: left;
+    font-weight: 600;
+}
+
+.dbm-th {
+    position: relative;
+}
+
+.dbm-th-label {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    height: 28px;
+    padding: 0 14px 0 10px; /* right padding leaves room for the resize handle */
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.dbm-th.num .dbm-th-label {
+    justify-content: flex-end;
+}
+
+.dbm-th-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dbm-sort-caret {
+    flex: 0 0 auto;
+    font-size: 0.6rem;
+    color: var(--dbm-accent-bright);
+}
+
+/* Drag handle on the column's right edge; double-click auto-fits. */
+.dbm-col-resize {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 8px;
+    height: 100%;
+    cursor: col-resize;
+    touch-action: none;
+}
+
+.dbm-col-resize:hover {
+    background-color: var(--dbm-accent-bright);
+}
+
+/* Filter row sits under the sticky header and stays pinned while scrolling.
+   Prefixed with .dbm-grid so it outranks the base thead th rule (top:0). */
+.dbm-grid .dbm-grid-filter-row th {
+    top: 28px;
+    height: auto;
+    padding: 2px 4px;
+    border-bottom: 1px solid var(--dbm-border-strong);
+}
+
+.dbm-grid-filter {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 1px 4px;
+    font-size: 0.75rem;
+    font-family: var(--bs-font-monospace);
+    color: var(--dbm-text);
+    background-color: var(--dbm-glass);
+    border: 1px solid var(--dbm-border);
+    border-radius: 4px;
+}
+
+.dbm-grid-filter:focus {
+    outline: none;
+    border-color: var(--dbm-accent-bright);
+}
+
+/* ---------------- Body rows ---------------- */
+
+/* Height is pinned to ItemSize (28) so Virtualize's scroll math stays exact. */
+.dbm-grid tbody td {
+    box-sizing: border-box;
+    height: 28px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--dbm-border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
+
+.dbm-grid tbody tr:hover td {
+    background-color: var(--dbm-glass-strong);
+}
+
+/* SSMS-style right-aligned numerics with tabular digits. */
+.dbm-grid .num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.dbm-null {
+    color: var(--dbm-text-dim);
+    font-style: italic;
+}
+
+/* ---------------- Export dialog ---------------- */
+
+.dbm-export-dialog {
+    width: 24rem;
+    max-width: 92vw;
+    padding: 0;
+    border: 1px solid var(--dbm-border);
+    border-radius: 14px;
+    background-color: var(--dbm-panel-solid);
+    color: var(--bs-body-color);
+}
+
+.dbm-export-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+}
+
+.dbm-export-dialog-body {
+    padding: 1rem 1.25rem 1.25rem;
+}

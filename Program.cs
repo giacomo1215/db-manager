@@ -55,6 +55,11 @@ builder.Services.AddSingleton<IBackupService, BackupService>();
 // while locked). Singleton so the loaded values are shared by every circuit. ---
 builder.Services.AddSingleton<ISettingsService, SettingsService>();
 
+// --- App preferences (theme) in the SQLite store's plaintext settings table.
+// Singleton and vault-independent, so App.razor can render the theme before
+// the vault is unlocked and without a flash. ---
+builder.Services.AddSingleton<IPreferenceStore, PreferenceStore>();
+
 // --- Saved-query library: scoped SQLite store (encrypts under the session vault
 // key, so it is per-circuit like ISessionVault) + stateless backup format facade. ---
 builder.Services.AddSingleton<IQueryBackupService, QueryBackupService>();
