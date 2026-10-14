@@ -173,6 +173,12 @@ namespace DbManager.Providers
 
         public string BuildFunctionStub(string qualifiedName) => $"SELECT {QuoteQualifiedName(qualifiedName)}(";
 
+        public string FormatSqlLiteral(object? value) =>
+            ConnectorHelpers.FormatSqlLiteral(value, hexLiteral: false, nativeBool: false, unicodePrefix: false);
+
+        public string BuildTruncateStatement(string quotedTable) =>
+            ConnectorHelpers.TruncateStatement(quotedTable, supportsTruncate: true);
+
         public string BuildConnectionString(ConnectionFormData form)
         {
             var port = form.Port ?? DefaultPort;

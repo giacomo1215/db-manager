@@ -58,6 +58,12 @@ namespace DbManager.Abstractions
         /// <summary>Builds the stub inserted for a function (SELECT …().</summary>
         string BuildFunctionStub(string qualifiedName);
 
+        /// <summary>Engine-correct SQL literal for one value (used by the results grid's SQL export).</summary>
+        string FormatSqlLiteral(object? value);
+
+        /// <summary>Statement that empties a table for the SQL export: TRUNCATE, or DELETE when unsupported.</summary>
+        string BuildTruncateStatement(string quotedTable);
+
         /// <summary>First keywords that mutate data or structure, for the write-gate heuristic.</summary>
         ISet<string> WriteKeywords { get; }
 

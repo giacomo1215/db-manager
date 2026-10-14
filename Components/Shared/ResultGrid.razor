@@ -44,6 +44,8 @@
                     <button type="button" @onclick='() => BeginExportAsync("txt")'><i class="bi bi-filetype-txt me-2"></i>Tab-separated TXT</button>
                     <button type="button" @onclick='() => BeginExportAsync("json")'><i class="bi bi-filetype-json me-2"></i>JSON</button>
                     <button type="button" @onclick='() => BeginExportAsync("xml")'><i class="bi bi-filetype-xml me-2"></i>XML</button>
+                    @* Reload script: TRUNCATE (or DELETE) + INSERT, opened in a new editor tab. *@
+                    <button type="button" @onclick='() => BeginExportAsync("sql")'><i class="bi bi-filetype-sql me-2"></i>SQL (truncate + insert, new tab)</button>
                 </div>
             }
         </div>
@@ -125,17 +127,39 @@
     </div>
 </div>
 
-@* Header-inclusion prompt — CSV and TXT only (JSON/XML always carry names). *@
+@* Format prompt — CSV/TXT ask about headers; SQL asks for the target table. *@
 <dialog id="@_dialogId" class="dbm-export-dialog">
     <div class="dbm-export-dialog-body">
-        <h6 class="mb-3"><i class="bi bi-download me-2"></i>Export as @_pendingFormat.ToUpperInvariant()</h6>
-        <div class="form-check">
-            <input class="form-check-input" type="checkbox" id="@(_dialogId + "-headers")"
-                   checked="@_includeHeaders" @onchange="OnHeadersToggled" />
-            <label class="form-check-label" for="@(_dialogId + "-headers")">Include column headers</label>
-        </div>
+        <h6 class="mb-3">
+            <i class="bi @(_pendingFormat == "sql" ? "bi-filetype-sql" : "bi-download") me-2"></i>
+            @(_pendingFormat == "sql" ? "Reload script (truncate + insert)" : $"Export as {_pendingFormat.ToUpperInvariant()}")
+        </h6>
+        @if (_pendingFormat == "sql")
+        {
+            <div class="mb-3">
+                <label class="form-label" for="@(_dialogId + "-table")">Target table</label>
+                <input type="text" class="form-control form-control-sm" id="@(_dialogId + "-table")"
+                       placeholder="schema.table" @bind="_sqlTableName" @bind:event="oninput" />
+                <div class="form-text">Detected from the query — adjust if needed.</div>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="@(_dialogId + "-truncate")"
+                       checked="@_sqlTruncate" @onchange="OnTruncateToggled" />
+                <label class="form-check-label" for="@(_dialogId + "-truncate")">Empty the table first (TRUNCATE/DELETE)</label>
+            </div>
+        }
+        else
+        {
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="@(_dialogId + "-headers")"
+                       checked="@_includeHeaders" @onchange="OnHeadersToggled" />
+                <label class="form-check-label" for="@(_dialogId + "-headers")">Include column headers</label>
+            </div>
+        }
         <div class="d-flex flex-row justify-content-end gap-2 mt-3">
-            <button type="button" class="btn btn-sm btn-primary" @onclick="ConfirmExportAsync">Export</button>
+            <button type="button" class="btn btn-sm btn-primary"
+                    disabled="@(_pendingFormat == "sql" && string.IsNullOrWhiteSpace(_sqlTableName))"
+                    @onclick="ConfirmExportAsync">@(_pendingFormat == "sql" ? "Insert into editor" : "Export")</button>
             <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelExportAsync">Cancel</button>
         </div>
     </div>
@@ -146,6 +170,20 @@
 
     /// <summary>Zero-based index of this result set (used in the export file name).</summary>
     [Parameter] public int ResultIndex { get; set; }
+
+    /// <summary>Active connection's engine — supplies quoting and value literals
+    /// for the "truncate + insert" SQL export.</summary>
+    [Parameter, EditorRequired] public IDbConnector Connector { get; set; } = default!;
+
+    /// <summary>Table detected from the query — prefills the reload export's target.</summary>
+    [Parameter] public string? SourceTable { get; set; }
+
+    /// <summary>
+    /// SQL-export sink: the generated "truncate + insert" script is handed to the
+    /// parent (the SQL editor) instead of being downloaded, so it can be opened
+    /// in a new tab for review. No execution happens here.
+    /// </summary>
+    [Parameter] public EventCallback<string> OnInsertSql { get; set; }
 
     private readonly string _gridId = "dbm-grid-" + Guid.NewGuid().ToString("N");
     private readonly string _dialogId = "dbm-export-" + Guid.NewGuid().ToString("N");
@@ -166,6 +204,8 @@
 
     private string _pendingFormat = "";
     private bool _includeHeaders = true;
+    private string _sqlTableName = "";
+    private bool _sqlTruncate = true;
 
     // Export scope. Default false = the raw query results (original order, no
     // filtering); true = exactly what the grid shows.
@@ -202,6 +242,14 @@
         }
 
         Rebuild();
+    }
+
+    protected override void OnParametersSet()
+    {
+        // Prefill the reload-export target from the query; the user can still
+        // adjust it in the dialog when detection picks the wrong table.
+        if (string.IsNullOrEmpty(_sqlTableName) && !string.IsNullOrWhiteSpace(SourceTable))
+            _sqlTableName = SourceTable.Trim();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -335,7 +383,7 @@
     private async Task BeginExportAsync(string format)
     {
         _menuOpen = false;
-        if (format is "csv" or "txt")
+        if (format is "csv" or "txt" or "sql")
         {
             _pendingFormat = format;
             await JS.InvokeVoidAsync("dbmSite.openDialog", _dialogId);
@@ -347,10 +395,16 @@
     private void OnHeadersToggled(ChangeEventArgs e) =>
         _includeHeaders = e.Value is bool b && b;
 
+    private void OnTruncateToggled(ChangeEventArgs e) =>
+        _sqlTruncate = e.Value is bool b && b;
+
     private async Task ConfirmExportAsync()
     {
         await JS.InvokeVoidAsync("dbmSite.closeDialog", _dialogId);
-        await RunExportAsync(_pendingFormat, _includeHeaders);
+        if (_pendingFormat == "sql")
+            await RunSqlExportAsync();
+        else
+            await RunExportAsync(_pendingFormat, _includeHeaders);
     }
 
     private Task CancelExportAsync() =>
@@ -369,7 +423,35 @@
             "json" => (ResultExporter.ToJson(names, rows), "application/json"),
             _ => (ResultExporter.ToXml(names, rows), "application/xml")
         };
+        await DownloadAsync(content, format, mime, rows.Count);
+    }
 
+    /// <summary>
+    /// Reload script for the current view: truncate + INSERT the rows.
+    /// Handed to the parent editor (new tab), not downloaded — never executed here.
+    /// </summary>
+    private async Task RunSqlExportAsync()
+    {
+        var table = _sqlTableName.Trim();
+        if (table.Length == 0)
+            return;
+
+        var rows = _exportAsViewed ? _view : _baseRows;
+        var names = _columns.Select(c => c.ColumnName).ToList();
+        // The table reference is emitted verbatim: it comes from the user's own
+        // (working) query, quoting already correct — re-quoting would mangle it.
+        var content = ResultExporter.ToTruncateInsert(
+            names,
+            rows,
+            table,
+            Connector.QuoteIdentifier,
+            Connector.FormatSqlLiteral,
+            _sqlTruncate ? Connector.BuildTruncateStatement(table) : null);
+        await OnInsertSql.InvokeAsync(content);
+    }
+
+    private async Task DownloadAsync(string content, string format, string mime, int rowCount)
+    {
         var fileName = $"result{ResultIndex + 1}.{format}";
         try
         {
@@ -383,7 +465,7 @@
                 await JS.InvokeVoidAsync("dbmSite.appendDownloadChunk", content.Substring(offset, length));
             }
             await JS.InvokeVoidAsync("dbmSite.finishDownload");
-            Toasts.Show("Export", $"Downloaded {fileName} ({rows.Count} rows).", ToastKind.Success, 4);
+            Toasts.Show("Export", $"Downloaded {fileName} ({rowCount} rows).", ToastKind.Success, 4);
         }
         catch (Exception ex)
         {

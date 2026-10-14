@@ -711,6 +711,31 @@ window.dbSqlEditor = (() => {
             editor.focus();
         },
 
+        // Chunked whole-content fill (startValue + repeated appendValue). A single
+        // interop string would blow the SignalR message cap for a large reload
+        // script, exactly like the download path on the C# side.
+        startValue: (divId) => {
+            const editor = findEditor(divId);
+            if (!editor) return;
+            editor.setValue('');
+        },
+
+        // Appends text at the end of the model. applyEdits with a zero-length
+        // range avoids the O(n^2) cost of getValue()+setValue per chunk.
+        appendValue: (divId, text) => {
+            const editor = findEditor(divId);
+            if (!editor) return;
+            const model = editor.getModel();
+            if (!model) return;
+            const lastLine = model.getLineCount();
+            const endColumn = model.getLineMaxColumn(lastLine);
+            model.applyEdits([{
+                range: { startLineNumber: lastLine, startColumn: endColumn, endLineNumber: lastLine, endColumn: endColumn },
+                text: text,
+                forceMoveMarkers: true
+            }]);
+        },
+
         getValue: (divId) => findEditor(divId)?.getValue() ?? '',
 
         // The currently highlighted text, or '' when the caret is collapsed

@@ -3,6 +3,9 @@
 @inject IPreferenceStore AppPrefs
 @inject IToastService Toasts
 @inject IJSRuntime JS
+@inject IVaultService Vault
+@inject ISessionVault SessionVault
+@inject IQueryStore QueryStore
 
 <PageTitle>Settings — db-manager</PageTitle>
 
@@ -27,10 +30,21 @@
                         Execute highlighted text only
                     </label>
                 </div>
-                <p class="text-body-secondary small mt-2 mb-0">
+                <p class="text-body-secondary small mt-2 mb-3">
                     When enabled, pressing Run (or F5) executes only the text you have
                     highlighted, like SSMS. With nothing highlighted, the whole editor
                     content runs. When disabled, Run always executes the whole script.
+                </p>
+
+                @* Row count for the sidebar quick-run button ("TOP N" / "LIMIT N"). *@
+                <label class="form-label" for="quick-rows-limit">Quick-run row limit</label>
+                <input type="number" class="form-control form-control-sm" id="quick-rows-limit"
+                       style="max-width: 200px;" min="1" max="100000" step="1"
+                       value="@Prefs.Current.QuickRowsLimit"
+                       @onchange="OnQuickRowsLimitChanged" />
+                <p class="text-body-secondary small mt-2 mb-0">
+                    Number of rows the schema-browser button fetches
+                    (<code>SELECT TOP N</code> / <code>LIMIT N</code>). Default 20.
                 </p>
             </div>
         </div>
@@ -63,12 +77,127 @@
             </div>
         </div>
     </div>
+
+    <div class="col-12 col-lg-7">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title mb-3"><i class="bi bi-key me-2"></i>Master password</h5>
+
+                @* Rare, security-sensitive operation: collapsed by default. The
+                   vault must be unlocked to rotate the key. *@
+                @if (!SessionVault.IsUnlocked)
+                {
+                    <p class="text-body-secondary small mb-0">
+                        Unlock the vault to change the master password.
+                    </p>
+                }
+                else
+                {
+                    <button type="button" class="btn btn-sm btn-outline-secondary mb-2"
+                            @onclick="() => _showChangePw = !_showChangePw">
+                        <i class="bi bi-chevron-@(_showChangePw ? "down" : "right") me-1"></i>
+                        @(_showChangePw ? "Hide" : "Change master password")
+                    </button>
+                    @if (_showChangePw)
+                    {
+                        <div class="mb-2">
+                            <label class="form-label">Current password</label>
+                            <input type="password" class="form-control" @bind="_currentPw" />
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label">New password</label>
+                            <input type="password" class="form-control" @bind="_masterPassword" />
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Repeat new password</label>
+                            <input type="password" class="form-control" @bind="_masterPassword2" />
+                        </div>
+                        <button type="button" class="btn btn-outline-primary" @onclick="ChangeMasterPasswordAsync">
+                            <i class="bi bi-arrow-repeat me-1"></i>Change
+                        </button>
+                        @if (_masterError is not null)
+                        {
+                            <div class="alert alert-danger mt-3 mb-0 py-2">@_masterError</div>
+                        }
+                    }
+                    <p class="text-body-secondary small mt-2 mb-0">
+                        Changing the master password re-encrypts your saved connections
+                        and the saved-query library under the new key.
+                    </p>
+                }
+            </div>
+        </div>
+    </div>
 </div>
 
 @code {
     private string _theme = "light";
 
+    // ---- Change master password state ----
+    private bool _showChangePw;
+    private string _currentPw = string.Empty;
+    private string _masterPassword = string.Empty;
+    private string _masterPassword2 = string.Empty;
+    private string? _masterError;
+
     protected override void OnInitialized() => _theme = AppPrefs.Theme;
+
+    private string? ValidateMasterPassword()
+    {
+        if (_masterPassword.Length < 6)
+            return "The master password must be at least 6 characters.";
+        if (!_masterPassword.Equals(_masterPassword2, StringComparison.Ordinal))
+            return "The two passwords do not match.";
+        return null;
+    }
+
+    private async Task ChangeMasterPasswordAsync()
+    {
+        _masterError = null;
+
+        // Verify the CURRENT password first — the change must not succeed on a
+        // guess (the profiles are already in memory, so only the check matters).
+        var check = await Task.Run(() =>
+            Vault.TryUnlock(_currentPw, out _, out _, out var error) ? (string?)null : error);
+        if (check is not null)
+        {
+            _masterError = check;
+            StateHasChanged();
+            return;
+        }
+
+        _masterError = ValidateMasterPassword();
+        if (_masterError is not null)
+        {
+            StateHasChanged();
+            return;
+        }
+
+        // Capture the current key BEFORE it rotates: the saved-query library is
+        // encrypted under it and must be re-encrypted to the new key.
+        var oldKey = SessionVault.DerivedKey;
+
+        try
+        {
+            var newKey = await Task.Run(() => Vault.ChangeMasterPassword(_masterPassword, SessionVault.Profiles));
+            SessionVault.Unlock(newKey, SessionVault.Profiles);
+            if (oldKey is not null)
+                await Task.Run(() => QueryStore.Reencrypt(oldKey, newKey));
+        }
+        catch (Exception ex)
+        {
+            _masterError = $"Could not change the master password: {ex.Message}";
+            StateHasChanged();
+            return;
+        }
+
+        _currentPw = string.Empty;
+        _masterPassword = string.Empty;
+        _masterPassword2 = string.Empty;
+        _showChangePw = false;
+        Toasts.Show("Vault", "Master password changed.", ToastKind.Success);
+        StateHasChanged();
+    }
 
     private async Task OnThemeChanged(ChangeEventArgs e)
     {
@@ -96,6 +225,24 @@
             Toasts.Show("Settings saved",
                 enabled ? "Run will execute the highlighted text." : "Run will execute the whole script.",
                 ToastKind.Success, 4);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Could not save settings", ex.Message, ToastKind.Danger);
+        }
+    }
+
+    private void OnQuickRowsLimitChanged(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var n))
+            return;
+        n = Math.Clamp(n, 1, 100000);
+        var settings = Prefs.Current;
+        settings.QuickRowsLimit = n;
+        try
+        {
+            Prefs.Save(settings);
+            Toasts.Show("Settings saved", $"Quick-run fetches {n} rows.", ToastKind.Success, 4);
         }
         catch (Exception ex)
         {

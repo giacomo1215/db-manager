@@ -1,9 +1,7 @@
 @page "/"
 @page "/connections"
 @using System.Threading
-@inject IVaultService Vault
 @inject ISessionVault SessionVault
-@inject IQueryStore QueryStore
 @inject IDbConnectorRegistry Registry
 @inject IToastService Toasts
 @inject NavigationManager Navigation
@@ -55,41 +53,6 @@
                                 </div>
                             }
                         </div>
-                    }
-                </div>
-            </div>
-
-            @* Change master password: rare operation, collapsed by default. *@
-            <div class="card mt-3">
-                <div class="card-body">
-                    <h5 class="card-title">
-                        <button type="button" class="btn btn-sm btn-outline-secondary me-2"
-                                @onclick="() => _showChangePw = !_showChangePw">
-                            <i class="bi bi-chevron-@(_showChangePw ? "down" : "right")"></i>
-                        </button>
-                        <i class="bi bi-key me-2"></i>Change master password
-                    </h5>
-                    @if (_showChangePw)
-                    {
-                        <div class="mb-2">
-                            <label class="form-label">Current password</label>
-                            <input type="password" class="form-control" @bind="_currentPw" />
-                        </div>
-                        <div class="mb-2">
-                            <label class="form-label">New password</label>
-                            <input type="password" class="form-control" @bind="_masterPassword" />
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">Repeat new password</label>
-                            <input type="password" class="form-control" @bind="_masterPassword2" />
-                        </div>
-                        <button type="button" class="btn btn-outline-primary" @onclick="ChangeMasterPasswordAsync">
-                            <i class="bi bi-arrow-repeat me-1"></i>Change
-                        </button>
-                        @if (_masterError is not null)
-                        {
-                            <div class="alert alert-danger mt-3 mb-0 py-2">@_masterError</div>
-                        }
                     }
                 </div>
             </div>
@@ -223,15 +186,6 @@
     </div>
 
 @code {
-    // ---- Change-password state ----
-    private string _masterPassword = string.Empty;
-    private string _masterPassword2 = string.Empty;
-    private string? _masterError;
-
-    // ---- Change password state ----
-    private bool _showChangePw;
-    private string _currentPw = string.Empty;
-
     // ---- Profile form state ----
     private string _profileName = string.Empty;
     private string _portText = string.Empty;
@@ -253,63 +207,6 @@
         // this page needs the decrypted profiles.
         if (!SessionVault.IsUnlocked)
             Navigation.NavigateTo("/login");
-    }
-
-    private string? ValidateMasterPassword()
-    {
-        if (_masterPassword.Length < 6)
-            return "The master password must be at least 6 characters.";
-        if (!_masterPassword.Equals(_masterPassword2, StringComparison.Ordinal))
-            return "The two passwords do not match.";
-        return null;
-    }
-
-    private async Task ChangeMasterPasswordAsync()
-    {
-        _masterError = null;
-
-        // Verify the CURRENT password first — the change must not succeed on a
-        // guess (the profiles are already in memory, so only the check matters).
-        var check = await Task.Run(() =>
-            Vault.TryUnlock(_currentPw, out _, out _, out var error) ? (string?)null : error);
-        if (check is not null)
-        {
-            _masterError = check;
-            StateHasChanged();
-            return;
-        }
-
-        _masterError = ValidateMasterPassword();
-        if (_masterError is not null)
-        {
-            StateHasChanged();
-            return;
-        }
-
-        // Capture the current key BEFORE it rotates: the saved-query library is
-        // encrypted under it and must be re-encrypted to the new key.
-        var oldKey = SessionVault.DerivedKey;
-
-        try
-        {
-            var newKey = await Task.Run(() => Vault.ChangeMasterPassword(_masterPassword, SessionVault.Profiles));
-            SessionVault.Unlock(newKey, SessionVault.Profiles);
-            if (oldKey is not null)
-                await Task.Run(() => QueryStore.Reencrypt(oldKey, newKey));
-        }
-        catch (Exception ex)
-        {
-            _masterError = $"Could not change the master password: {ex.Message}";
-            StateHasChanged();
-            return;
-        }
-
-        _currentPw = string.Empty;
-        _masterPassword = string.Empty;
-        _masterPassword2 = string.Empty;
-        _showChangePw = false;
-        Toasts.Show("Vault", "Master password changed.", ToastKind.Success);
-        StateHasChanged();
     }
 
     // ---------------- Profile CRUD ----------------

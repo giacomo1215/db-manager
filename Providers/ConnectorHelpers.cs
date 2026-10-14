@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
 
 namespace DbManager.Providers
 {
@@ -101,5 +103,56 @@ namespace DbManager.Providers
             "UPDATE", "DELETE", "INSERT", "MERGE", "ALTER", "DROP", "TRUNCATE",
             "CREATE", "EXEC", "EXECUTE", "GRANT", "REVOKE"
         };
+
+        /// <summary>
+        /// Engine-correct SQL literal for one result value, used by the results
+        /// grid's "truncate + insert" export.
+        /// <paramref name="hexLiteral"/> picks the binary form — 0xDEADBEEF for
+        /// T-SQL, X'DEADBEEF' elsewhere. <paramref name="nativeBool"/> emits
+        /// TRUE/FALSE (PostgreSQL) instead of the portable 1/0 that every other
+        /// engine accepts for a boolean column. <paramref name="unicodePrefix"/>
+        /// prefixes string literals with N (T-SQL) so non-ASCII text survives.
+        /// </summary>
+        public static string FormatSqlLiteral(object? value, bool hexLiteral, bool nativeBool, bool unicodePrefix)
+        {
+            switch (value)
+            {
+                case null or DBNull:
+                    return "NULL";
+                case bool b:
+                    return nativeBool ? (b ? "TRUE" : "FALSE") : (b ? "1" : "0");
+                case byte[] bytes:
+                    var hex = Convert.ToHexString(bytes);
+                    return hexLiteral ? "0x" + hex : "X'" + hex + "'";
+                case sbyte or byte or short or ushort or int or uint or long or ulong:
+                    return Convert.ToString(value, CultureInfo.InvariantCulture) ?? "0";
+                case float f:
+                    return FormatFloat(f);
+                case double d:
+                    return FormatFloat(d);
+                case decimal m:
+                    return m.ToString(CultureInfo.InvariantCulture);
+                case DateTime dt:
+                    return "'" + dt.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + "'";
+                case DateTimeOffset dto:
+                    return "'" + dto.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture) + "'";
+                case Guid g:
+                    return "'" + g.ToString() + "'";
+                default:
+                    // Doubling the quote is the portable escape for every engine here.
+                    var prefix = unicodePrefix ? "N" : "";
+                    return prefix + "'" + (value.ToString() ?? string.Empty).Replace("'", "''") + "'";
+            }
+        }
+
+        /// <summary>The statement that empties a table: TRUNCATE, or DELETE for engines without it.</summary>
+        public static string TruncateStatement(string quotedTable, bool supportsTruncate) =>
+            supportsTruncate ? $"TRUNCATE TABLE {quotedTable};" : $"DELETE FROM {quotedTable};";
+
+        // NaN/Infinity have no portable SQL literal; NULL is safer than invalid SQL.
+        private static string FormatFloat(double value) =>
+            double.IsNaN(value) || double.IsInfinity(value)
+                ? "NULL"
+                : value.ToString("R", CultureInfo.InvariantCulture);
     }
 }

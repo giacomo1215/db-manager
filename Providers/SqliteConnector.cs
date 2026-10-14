@@ -102,6 +102,13 @@ namespace DbManager.Providers
         /// <summary>SQLite has no functions; stub kept for interface symmetry.</summary>
         public string BuildFunctionStub(string qualifiedName) => QuoteIdentifier(qualifiedName);
 
+        public string FormatSqlLiteral(object? value) =>
+            ConnectorHelpers.FormatSqlLiteral(value, hexLiteral: false, nativeBool: false, unicodePrefix: false);
+
+        /// <summary>SQLite has no TRUNCATE; emptying a table is a DELETE FROM.</summary>
+        public string BuildTruncateStatement(string quotedTable) =>
+            ConnectorHelpers.TruncateStatement(quotedTable, supportsTruncate: false);
+
         public string BuildConnectionString(ConnectionFormData form) =>
             $"Data Source={ConnectorHelpers.EscapeCsValue(form.FilePath)}";
 

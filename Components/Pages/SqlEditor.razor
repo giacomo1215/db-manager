@@ -1,5 +1,6 @@
 @page "/sql-editor"
 @using System.Data
+@using DbManager.Services
 @using Microsoft.AspNetCore.Components.Web
 @inject ISqlEditorViewModel vm
 @inject ISqlEditorService EditorService
@@ -432,7 +433,9 @@
                             @* @key on the DataTable instance: a re-run produces a new
                                table, which recreates the grid and resets its sort,
                                filter and column-width state. *@
-                            <ResultGrid @key="table" Table="table" ResultIndex="tab.ActiveResultTab" />
+                            <ResultGrid @key="table" Table="table" ResultIndex="tab.ActiveResultTab"
+                                        Connector="Connector" SourceTable="@tab.SourceTable"
+                                        OnInsertSql="InsertSqlInNewTabAsync" />
                         }
                     </div>
                     <div class="sql-results-footer">
@@ -477,6 +480,9 @@
         public double SplitPct { get; set; } = 50;
         public SqlEditorResult? Result { get; set; }
         public string? PendingSql { get; set; }
+
+        /// <summary>Table detected from the executed SQL — prefills the grid's reload export.</summary>
+        public string? SourceTable { get; set; }
     }
 
     // Sidebar width/collapse. The dragger element only exists while expanded, so
@@ -521,9 +527,11 @@
     /// <summary>Connector of the active connection (never null once the page renders).</summary>
     private IDbConnector Connector => Registry.Resolve(vm.ActiveProfile?.EngineKey ?? "")!;
 
-    /// <summary>"TOP 20" or "LIMIT 20", whichever the dialect uses.</summary>
+    /// <summary>"TOP 20" or "LIMIT 20", whichever the dialect uses (N from settings).</summary>
     private string QuickRowsLabel =>
-        Connector.DialectConfig.TopSnippet.Contains("TOP") ? "TOP 20" : "LIMIT 20";
+        Connector.DialectConfig.TopSnippet.Contains("TOP")
+            ? $"TOP {Settings.Current.QuickRowsLimit}"
+            : $"LIMIT {Settings.Current.QuickRowsLimit}";
 
     protected override async Task OnInitializedAsync()
     {
@@ -807,18 +815,54 @@
     }
 
     /// <summary>
-    /// Sidebar quick-peek: replaces the editor content (the natural expectation
-    /// for a quick look) and runs immediately. Always a read, so no confirm dialog.
-    /// Dialect-aware: TOP for T-SQL, LIMIT for the rest, quoted per engine.
+    /// Sidebar quick-peek: opens the query in a NEW tab (the current query is
+    /// left untouched) and runs it immediately. Always a read, so no confirm
+    /// dialog. Dialect-aware: TOP for T-SQL, LIMIT for the rest, quoted per
+    /// engine. N comes from the QuickRowsLimit setting.
     /// </summary>
     private async Task RunTop20Async(string objectName)
     {
         if (!_editorReady || _isRunning)
             return;
 
-        var sql = Connector.BuildSelectTopN(objectName, 20);
-        await JS.InvokeVoidAsync("dbSqlEditor.setValue", EditorDivId, sql);
+        var sql = Connector.BuildSelectTopN(objectName, Settings.Current.QuickRowsLimit);
+        await AddQueryTabWithSqlAsync(sql);
         await ExecuteSqlAsync(sql);
+    }
+
+    /// <summary>
+    /// Results-grid "truncate + insert" export: opens the generated reload
+    /// script in a NEW tab. Never executed — the user reviews and runs it.
+    /// </summary>
+    private async Task InsertSqlInNewTabAsync(string sql)
+    {
+        await AddQueryTabWithSqlAsync(sql);
+        Toasts.Show("Inserted", "Reload script opened in a new tab.", ToastKind.Success, 4);
+    }
+
+    /// <summary>
+    /// Adds a new query tab, activates it and fills it with <paramref name="sql"/>.
+    /// The text is streamed in chunks: a single interop string would exceed the
+    /// SignalR message cap (~32 KB) for a large reload script.
+    /// </summary>
+    private async Task AddQueryTabWithSqlAsync(string sql)
+    {
+        var tab = new QueryTab { Name = $"Query {++_tabCounter}" };
+        _tabs.Add(tab);
+        _activeTabId = tab.Id;
+
+        if (_editorReady)
+        {
+            await JS.InvokeVoidAsync("dbSqlEditor.openTab", EditorDivId, tab.Id.ToString());
+            await JS.InvokeVoidAsync("dbSqlEditor.startValue", EditorDivId);
+            const int chunkSize = 16 * 1024;
+            for (var offset = 0; offset < sql.Length; offset += chunkSize)
+            {
+                var length = Math.Min(chunkSize, sql.Length - offset);
+                await JS.InvokeVoidAsync("dbSqlEditor.appendValue", EditorDivId, sql.Substring(offset, length));
+            }
+        }
+        StateHasChanged();
     }
 
     /// <summary>Common execution path with the write gate and run/finish bookkeeping.</summary>
@@ -860,6 +904,7 @@
         var tab = ActiveTab;
         _isRunning = true;
         tab.PendingSql = null;
+        tab.SourceTable = SqlTableExtractor.Extract(sql);
         StateHasChanged();
         try
         {
