@@ -51,6 +51,10 @@ builder.Services.AddScoped<ISessionVault, SessionVault>();
 // --- Backup & restore: stateless format facade (singleton). Crypto stays in VaultService. ---
 builder.Services.AddSingleton<IBackupService, BackupService>();
 
+// --- User preferences: plain JSON file beside the vault (non-secret, readable
+// while locked). Singleton so the loaded values are shared by every circuit. ---
+builder.Services.AddSingleton<ISettingsService, SettingsService>();
+
 // --- Saved-query library: scoped SQLite store (encrypts under the session vault
 // key, so it is per-circuit like ISessionVault) + stateless backup format facade. ---
 builder.Services.AddSingleton<IQueryBackupService, QueryBackupService>();
