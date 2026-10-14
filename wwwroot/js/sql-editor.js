@@ -17,6 +17,16 @@ window.dbSqlEditor = (() => {
     // divId -> { editor, dotnetRef } — one entry per mounted editor instance.
     const editors = new Map();
 
+    // tabKey (query-tab id) -> monaco model. ONE editor instance swaps between
+    // these via setModel; each model keeps its own text and undo history, so tab
+    // switching is instant and lossless.
+    const models = new Map();
+
+    // tabKey -> monaco view state (cursor, scroll, selections). setModel resets
+    // the viewport, so openTab saves the outgoing tab's state and restores the
+    // incoming one's.
+    const viewStates = new Map();
+
     // Schema for autocomplete, set from C# after the DB round trip.
     // Shape: [{ name, kind, schema, columns: [{ name, dataType }] }, ...]
     // `name` is the QUERY-READY identifier (bare in the default schema,
@@ -520,8 +530,10 @@ window.dbSqlEditor = (() => {
         // Creates the editor inside the div with the given id. Called from
         // OnAfterRenderAsync(firstRender) — by then the div exists in the DOM.
         // dotnetRef: DotNetObjectReference of the page; used for OnRunRequested.
+        // firstTabKey: id of the page's initial query tab — its model is created
+        //   here, seeded from that profile's draft, and attached to the editor.
         // profileId: connection profile the draft autosave keys off.
-        init: (divId, dotnetRef, isDark, profileId) => {
+        init: (divId, dotnetRef, isDark, firstTabKey, profileId) => {
             // Path where the AMD loader can find the rest of Monaco, matching the
             // pinned version loaded in App.razor. Must stay in sync with it.
             require.config({
@@ -533,9 +545,15 @@ window.dbSqlEditor = (() => {
 
                 draftKey = storageKeyFor(profileId);
 
+                // First tab's model, seeded from the profile draft. Additional
+                // tabs get their own (empty) models through openTab.
+                const model = monaco.editor.createModel(
+                    localStorage.getItem(draftKey) || '-- Write a query and press Run (or F5)',
+                    'sql');
+                models.set(firstTabKey, model);
+
                 const editor = monaco.editor.create(document.getElementById(divId), {
-                    value: localStorage.getItem(draftKey) || '-- Write a query and press Run (or F5)',
-                    language: 'sql',                        // built-in SQL tokenizer: SSMS-like keyword coloring
+                    model: model,
                     theme: isDark ? 'vs-dark' : 'vs',        // matches the app's Bootstrap dark mode at init time
                     automaticLayout: true,                  // ResizeObserver: editor reflows when the split divider moves
                     minimap: { enabled: false },
@@ -552,7 +570,8 @@ window.dbSqlEditor = (() => {
 
                 // Keybindings. addCommand registers a REAL binding, so Monaco
                 // also prevents the browser default (F5 = page refresh) while the
-                // editor has focus — same expectation as SSMS.
+                // editor has focus — same expectation as SSMS. Added on the
+                // editor, they persist across model swaps (tab switches).
                 const run = () => dotnetRef.invokeMethodAsync('OnRunRequested');
                 editor.addCommand(monaco.KeyCode.F5, run);
                 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyE, run);
@@ -568,6 +587,44 @@ window.dbSqlEditor = (() => {
                 // and enable the Run button (which waits on the editor existing).
                 dotnetRef.invokeMethodAsync('OnEditorReady');
             });
+        },
+
+        // Attaches the model for a query tab (creating it empty on first use),
+        // then focuses the editor. This is how the page switches tabs.
+        openTab: (divId, tabKey) => {
+            const entry = editors.get(divId);
+            if (!entry) return;
+            const editor = entry.editor;
+
+            // Save the outgoing tab's view state before swapping models.
+            const current = editor.getModel();
+            if (current) {
+                for (const [k, m] of models) {
+                    if (m === current) { viewStates.set(k, editor.saveViewState()); break; }
+                }
+            }
+
+            let model = models.get(tabKey);
+            if (!model) {
+                model = monaco.editor.createModel('', 'sql');
+                models.set(tabKey, model);
+            }
+            editor.setModel(model);
+            const viewState = viewStates.get(tabKey);
+            if (viewState) editor.restoreViewState(viewState);
+            editor.focus();
+        },
+
+        // Detaches (if active) and disposes a tab's model. Called when a query
+        // tab is closed so its undo history and text are freed.
+        closeTab: (divId, tabKey) => {
+            const model = models.get(tabKey);
+            if (!model) return;
+            const entry = editors.get(divId);
+            if (entry && entry.editor.getModel() === model) entry.editor.setModel(null);
+            model.dispose();
+            models.delete(tabKey);
+            viewStates.delete(tabKey);
         },
 
         // Live theme flip, called by dbmSite.toggleTheme (which must not
@@ -622,14 +679,11 @@ window.dbSqlEditor = (() => {
             }
         },
 
-        // Connection switched: keep the editor, swap the draft the autosave
-        // writes to, and load the new profile's draft as the content.
-        loadDraft: (divId, profileId) => {
+        // Connection switched: re-point the draft autosave to the new profile's
+        // key. The open query tabs (and their text) are deliberately kept — only
+        // the autosave target changes, so the last edit still survives a reload.
+        setDraftKey: (profileId) => {
             draftKey = storageKeyFor(profileId);
-            const editor = findEditor(divId);
-            if (!editor) return;
-            editor.setValue(localStorage.getItem(draftKey) || '');
-            editor.focus();
         },
 
         // Inserts text at the caret (sidebar table/column clicks) and focuses
@@ -668,6 +722,11 @@ window.dbSqlEditor = (() => {
             const divider = document.getElementById(dividerId);
             const pane = document.getElementById(paneId);
             if (!divider || !pane) return;
+            // Self-guard: the results pane is @key-ed per tab (fresh element on
+            // each switch / first run), so C# may call this on every render while
+            // results are visible without stacking duplicate listeners.
+            if (divider.dataset.dbmWired === '1') return;
+            divider.dataset.dbmWired = '1';
 
             divider.addEventListener('pointerdown', (e) => {
                 e.preventDefault();
@@ -739,6 +798,11 @@ window.dbSqlEditor = (() => {
                 entry.editor.dispose();
                 editors.delete(divId);
             }
+            // Free every query-tab model too (one editor per page, so this is
+            // the whole model set).
+            for (const model of models.values()) model.dispose();
+            models.clear();
+            viewStates.clear();
         }
     };
 })();

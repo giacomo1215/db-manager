@@ -193,6 +193,88 @@
     min-height: 0;
 }
 
+/* ---------------- Query tabs ---------------- */
+/* Strip of open query tabs above the editor. Horizontal scroll instead of wrap
+   so many tabs never steal vertical space from the editor. */
+.sql-query-tabs {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 2px;
+    margin-bottom: 0.5rem;
+    padding: 2px;
+    overflow-x: auto;
+    border: 1px solid var(--dbm-border);
+    border-radius: 10px;
+    background-color: var(--dbm-glass);
+    -webkit-backdrop-filter: blur(18px);
+    backdrop-filter: blur(18px);
+}
+
+.sql-query-tab {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    flex: 0 0 auto;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background-color: transparent;
+    overflow: hidden;
+}
+
+.sql-query-tab:hover {
+    background-color: var(--dbm-glass-strong);
+}
+
+.sql-query-tab.active {
+    background-color: var(--dbm-glass-strong);
+    border-color: var(--dbm-border-strong);
+    box-shadow: inset 0 -2px 0 var(--dbm-accent-bright);
+}
+
+.sql-query-tab-name {
+    background: none;
+    border: none;
+    padding: 4px 4px 4px 10px;
+    font-size: 0.82rem;
+    color: var(--dbm-text);
+    white-space: nowrap;
+    max-width: 14rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sql-query-tab.active .sql-query-tab-name {
+    color: var(--dbm-accent-bright);
+}
+
+.sql-query-tab-close {
+    background: none;
+    border: none;
+    padding: 2px 8px 2px 2px;
+    line-height: 1;
+    color: var(--dbm-text-dim);
+}
+
+.sql-query-tab-close:hover {
+    color: var(--bs-danger);
+}
+
+.sql-query-tab-add {
+    flex: 0 0 auto;
+    background: none;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 8px;
+    color: var(--dbm-text-dim);
+}
+
+.sql-query-tab-add:hover {
+    background-color: var(--dbm-glass-strong);
+    color: var(--dbm-accent-bright);
+}
+
 .sql-divider {
     height: 8px;
     flex: 0 0 8px;
