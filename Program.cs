@@ -29,11 +29,11 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 // --- Text log: dependency-free file logger. Warning+ (i.e. the errors the app
-// surfaces and the ones it swallows) go to logs/db-manager-<date>.txt in the
-// working directory. Overridable via Logging:File:Directory. Also add console
-// output so the Server release prints errors to its console too. ---
+// surfaces and the ones it swallows) go to App_Data/db-manager-<date>.txt — the
+// same data folder the vault and query store use in Production. Overridable via
+// Logging:File:Directory. ---
 var logDirectory = builder.Configuration["Logging:File:Directory"]
-    ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
+    ?? Path.Combine(Directory.GetCurrentDirectory(), "App_Data");
 builder.Logging.AddProvider(new FileLoggerProvider(logDirectory));
 
 // --- Engine connectors: one singleton per engine. Adding a new database is
