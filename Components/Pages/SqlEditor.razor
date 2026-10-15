@@ -1,5 +1,7 @@
 @page "/sql-editor"
 @using System.Data
+@using System.Xml
+@using System.Xml.Linq
 @using DbManager.Services
 @using Microsoft.AspNetCore.Components.Web
 @inject ISqlEditorViewModel vm
@@ -596,18 +598,37 @@
                         }
                         else if (tab.IsExplain)
                         {
-                            @* Plan output: preformatted text, not a grid — EXPLAIN
-                               rows are wide monospace lines, not tabular data. *@
-                            var plan = ExplainText(result);
+                            @* Plan output: a graphical operator graph (SSMS-style)
+                               for SQL Server ShowPlan XML, with a toggle to the raw
+                               XML/text view. Non-XML engines (mysql/postgres/sqlite)
+                               always render as text — there is nothing to graph. *@
+                            var planText = ExplainText(result);
+                            var planXml = ExplainXml(result);
+                            var canGraph = planXml is not null;
                             <div class="sql-plan">
-                                <div class="sql-plan-label"><i class="bi bi-diagram-3 me-1"></i>Execution plan</div>
-                                @if (plan.Length == 0)
+                                <div class="sql-plan-header">
+                                    <span class="sql-plan-label"><i class="bi bi-diagram-3 me-1"></i>Execution plan</span>
+                                    @if (canGraph)
+                                    {
+                                        <div class="btn-group btn-group-sm sql-plan-toggle" role="group" aria-label="Plan view">
+                                            <button type="button" class="btn btn-outline-secondary @(!tab.PlanRaw ? "active" : "")"
+                                                    @onclick="() => SetPlanRaw(tab, false)">Graph</button>
+                                            <button type="button" class="btn btn-outline-secondary @(tab.PlanRaw ? "active" : "")"
+                                                    @onclick="() => SetPlanRaw(tab, true)">XML</button>
+                                        </div>
+                                    }
+                                </div>
+                                @if (planText.Length == 0)
                                 {
                                     <div class="sql-message">No plan returned.</div>
                                 }
+                                else if (canGraph && !tab.PlanRaw)
+                                {
+                                    <div class="sql-plan-graph" id="@PlanContainerId(tab)"></div>
+                                }
                                 else
                                 {
-                                    <pre class="sql-plan-text">@plan</pre>
+                                    <pre class="sql-plan-text">@planText</pre>
                                 }
                             </div>
                         }
@@ -683,6 +704,12 @@
     private int _tabCounter;
     private QueryTab ActiveTab => _tabs.First(t => t.Id == _activeTabId);
 
+    // Id of the plan graph already drawn by JS. OnAfterRenderAsync runs after
+    // EVERY render (the run ticker re-renders ~4x/s), so the graph is drawn only
+    // when this key changes — otherwise each tick would tear down and rebuild the
+    // SVG and reset scroll/zoom.
+    private string? _renderedPlanKey;
+
     /// <summary>One query tab: its own results, result-set selection and split.</summary>
     private sealed class QueryTab
     {
@@ -699,6 +726,9 @@
 
         /// <summary>True when the pane is showing an execution plan (rendered as text, not a grid).</summary>
         public bool IsExplain { get; set; }
+
+        /// <summary>Explain view: true = raw XML/text, false = graphical graph (default).</summary>
+        public bool PlanRaw { get; set; }
 
         /// <summary>Table detected from the executed SQL — prefills the grid's reload export.</summary>
         public string? SourceTable { get; set; }
@@ -834,6 +864,67 @@
         {
             _sidebarWired = true;
             await JS.InvokeVoidAsync("dbSqlEditor.initSidebarSplit", SidebarDragId, SidebarId, _dotnetRef);
+        }
+
+        // Execution plan: draw the SSMS-style graph once its container is in the
+        // DOM (guarded so the run ticker's re-renders don't rebuild it).
+        await RenderPlanGraphAsync();
+    }
+
+    /// <summary>
+    /// Draws the active tab's plan graph via JS interop. Runs only when the plan
+    /// or view actually changed (see <see cref="_renderedPlanKey"/>). Falls back
+    /// to the raw XML/text view when the renderer is unavailable or the XML does
+    /// not parse — e.g. the html-query-plan CDN is unreachable.
+    /// </summary>
+    private async Task RenderPlanGraphAsync()
+    {
+        var tab = ActiveTab;
+        if (!tab.IsExplain || tab.PlanRaw || tab.Result is not { Error: null } result)
+        {
+            _renderedPlanKey = null;
+            return;
+        }
+
+        var xml = ExplainXml(result);
+        if (xml is null)
+            return;
+
+        var key = $"{tab.Id:N}:{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(result)}";
+        var containerId = PlanContainerId(tab);
+
+        string error;
+        try
+        {
+            // Redraw when the plan changed OR the container is blank — switching
+            // query tabs recreates the pane, so the same plan can land in a fresh
+            // (empty) container that still matches the render key.
+            var drawn = key == _renderedPlanKey
+                        && await JS.InvokeAsync<bool>("dbmQueryPlan.isRendered", containerId);
+            if (drawn)
+                return;
+
+            error = await JS.InvokeAsync<string>("dbmQueryPlan.render", containerId, xml);
+        }
+        catch (Exception ex)
+        {
+            // Interop can throw if the circuit tears down mid-render; treat it as
+            // a failed draw and fall back rather than faulting the page.
+            error = ex.Message;
+        }
+
+        if (string.IsNullOrEmpty(error))
+        {
+            _renderedPlanKey = key;
+        }
+        else
+        {
+            // Renderer missing or plan unparseable: show the XML/text instead of
+            // an empty box, and surface the reason so the failure isn't silent.
+            _renderedPlanKey = null;
+            tab.PlanRaw = true;
+            Toasts.Show("Plan graph unavailable", error, ToastKind.Warning, 10);
+            StateHasChanged();
         }
     }
 
@@ -1335,12 +1426,73 @@
                 {
                     if (i > 0)
                         sb.Append("  |  ");
-                    sb.Append(row[i] is DBNull or null ? "NULL" : row[i].ToString());
+                    sb.Append(FormatPlanCell(row[i]));
                 }
                 sb.Append('\n');
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>Stable DOM id for a tab's plan-graph container (JS interop lookup).</summary>
+    private static string PlanContainerId(QueryTab tab) => $"dbm-plan-{tab.Id:N}";
+
+    /// <summary>Toggle the explain view between the graph and the raw XML/text.</summary>
+    private void SetPlanRaw(QueryTab tab, bool raw)
+    {
+        if (tab.PlanRaw == raw)
+            return;
+        tab.PlanRaw = raw;
+        // Force OnAfterRenderAsync to (re)draw the graph when switching back.
+        _renderedPlanKey = null;
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// The raw ShowPlan XML to hand to the graph renderer, or null when the
+    /// active engine's plan is not XML. Only SQL Server emits ShowPlan XML;
+    /// mysql/postgres/sqlite return text plans that can only be shown as text.
+    /// </summary>
+    private string? ExplainXml(SqlEditorResult result)
+    {
+        if (Connector is null ||
+            !string.Equals(Connector.EngineKey, "mssql", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        foreach (var table in result.ResultSets)
+        {
+            foreach (DataRow row in table.Rows)
+            {
+                if (table.Columns.Count == 0)
+                    continue;
+                var cell = row[0]?.ToString();
+                if (!string.IsNullOrWhiteSpace(cell) && cell.TrimStart().StartsWith('<'))
+                    return cell;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>Pretty-prints a single plan cell. SQL Server returns ShowPlan as
+    /// one unbroken XML document; re-indent it so it is readable. Non-XML values
+    /// are returned unchanged.</summary>
+    private static string FormatPlanCell(object? value)
+    {
+        if (value is DBNull or null)
+            return "NULL";
+
+        var text = value.ToString() ?? string.Empty;
+        if (!text.TrimStart().StartsWith('<'))
+            return text;
+
+        try
+        {
+            return XDocument.Parse(text).ToString();
+        }
+        catch (XmlException)
+        {
+            return text;
+        }
     }
 
     private Task InsertAtCursor(string text) =>
@@ -1797,9 +1949,22 @@
 
     public void Dispose()
     {
-        // Fire-and-forget on purpose: Dispose must be sync, and at teardown the
-        // circuit is going away anyway — a missed JS call harms nothing.
-        _ = JS.InvokeVoidAsync("dbSqlEditor.dispose", EditorDivId);
+        // Dispose must be sync, so run teardown detached. At circuit teardown the
+        // JS call throws JSDisconnectedException; awaiting it in a helper that
+        // swallows that keeps the failure from surfacing as an unobserved task
+        // exception on the finalizer thread.
+        _ = DisposeEditorAsync();
         _dotnetRef?.Dispose();
+    }
+
+    private async Task DisposeEditorAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("dbSqlEditor.dispose", EditorDivId);
+        }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        catch (TaskCanceledException) { }
     }
 }

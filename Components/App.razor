@@ -20,6 +20,11 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" />
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["DbManager.styles.css"]" />
+    @* Execution-plan renderer (SSMS-style operator graph from ShowPlan XML).
+       Served locally (not CDN) so the plan view never depends on a network
+       fetch. qp.css reads the qp_icons.png sprite next to it, and the JS reads
+       the .qp-* classes from this CSS — keep js/css/icons on the same version. *@
+    <link rel="stylesheet" href="@Assets["lib/html-query-plan/css/qp.css"]" />
     <ImportMap />
     <link rel="icon" type="image/png" href="favicon.png" />
     @* Theme is set server-side on <html> above — no pre-paint script needed. *@
@@ -32,6 +37,13 @@
     @* Loaded before blazor.web.js so each is ready as soon as the circuit starts
        calling it. site.js first — theme helpers are used by the layout. *@
     <script src="js/site.js"></script>
+    @* Graphical execution plan (html-query-plan, served locally). MUST load
+       BEFORE Monaco's AMD loader below: qp.min.js is a UMD bundle that checks
+       `define.amd`, and Monaco's loader installs a global AMD `define` — load
+       order reversed and QP registers as an anonymous AMD module instead of
+       exposing the global `window.QP` the interop needs. *@
+    <script src="@Assets["lib/html-query-plan/dist/qp.min.js"]"></script>
+    <script src="js/query-plan.js"></script>
     @* Monaco AMD loader for the SQL editor page. Only this ~3 KB bootstrap comes
        from the CDN; the editor engine (~2 MB) is downloaded lazily by
        js/sql-editor.js on the first visit to the page. Pinned version — MUST
