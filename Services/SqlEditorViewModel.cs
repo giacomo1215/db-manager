@@ -111,6 +111,11 @@ namespace DbManager.Services
                 ? Task.FromResult(new SqlEditorResult { Error = "No connection selected." })
                 : _service.ExecuteAsync(ActiveProfile, sql, ct);
 
+        public Task<SqlEditorResult> ExplainAsync(string sql, CancellationToken ct = default) =>
+            ActiveProfile is null
+                ? Task.FromResult(new SqlEditorResult { Error = "No connection selected." })
+                : _service.ExplainAsync(ActiveProfile, sql, ct);
+
         public bool IsWriteStatement(string sql) =>
             ActiveProfile is not null && _service.IsWriteStatement(ActiveProfile, sql);
     }

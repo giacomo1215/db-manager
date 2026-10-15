@@ -143,6 +143,55 @@ namespace DbManager.Services
             return Encoding.UTF8.GetString(stream.ToArray());
         }
 
+        /// <summary>
+        /// A reload script for <paramref name="quotedTable"/>: optionally the
+        /// caller's truncate statement, then multi-row INSERTs of the current
+        /// rows. Dialect specifics (identifier quoting, value literals, the
+        /// truncate form) are supplied by the caller so the script runs on the
+        /// source engine. Rows are grouped into INSERT statements of at most
+        /// <paramref name="rowsPerStatement"/> tuples to stay readable.
+        /// </summary>
+        public static string ToTruncateInsert(
+            IReadOnlyList<string> columns,
+            IEnumerable<DataRow> rows,
+            string quotedTable,
+            Func<string, string> quoteIdentifier,
+            Func<object?, string> formatLiteral,
+            string? truncateStatement,
+            int rowsPerStatement = 1000)
+        {
+            var sb = new StringBuilder();
+            if (!string.IsNullOrEmpty(truncateStatement))
+                sb.Append(truncateStatement).Append("\r\n");
+
+            if (columns.Count == 0)
+                return sb.ToString();
+
+            var columnList = string.Join(", ", columns.Select(quoteIdentifier));
+            var prefix = $"INSERT INTO {quotedTable} ({columnList}) VALUES\r\n";
+
+            // Materialized so the final row is known: the last tuple must close
+            // with ';' even when the batch is only partially filled.
+            var list = rows as IReadOnlyList<DataRow> ?? rows.ToList();
+            for (var n = 0; n < list.Count; n++)
+            {
+                if (n % rowsPerStatement == 0)
+                    sb.Append(prefix);
+
+                sb.Append("    (");
+                for (var i = 0; i < columns.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(formatLiteral(list[n][i]));
+                }
+                sb.Append(')');
+
+                var closesStatement = (n + 1) % rowsPerStatement == 0 || n == list.Count - 1;
+                sb.Append(closesStatement ? ";\r\n" : ",\r\n");
+            }
+            return sb.ToString();
+        }
+
         // --- internals -----------------------------------------------------------
 
         private static void WriteJsonValue(Utf8JsonWriter writer, string name, object? value)

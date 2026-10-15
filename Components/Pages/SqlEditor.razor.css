@@ -341,6 +341,55 @@
     font-size: 0.9rem;
 }
 
+/* Running-query state: centered spinner + ticking elapsed + Cancel, so a slow
+   query reads as "working" rather than a frozen app. */
+.sql-running {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2rem 1rem;
+    color: var(--dbm-text-dim);
+    font-size: 0.9rem;
+}
+
+.sql-running-text {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+
+.sql-running-elapsed {
+    font-family: var(--bs-font-monospace);
+    color: var(--dbm-text);
+}
+
+/* ---------------- Execution plan ---------------- */
+.sql-plan {
+    padding: 0.5rem 0.75rem;
+}
+
+.sql-plan-label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--dbm-text-dim);
+    margin-bottom: 0.4rem;
+}
+
+/* Plan lines are wide and indentation-significant: monospace, no wrap. */
+.sql-plan-text {
+    margin: 0;
+    font-family: var(--bs-font-monospace);
+    font-size: 0.8rem;
+    line-height: 1.35;
+    color: var(--dbm-text);
+    white-space: pre;
+    overflow-x: auto;
+}
+
 .sql-results-footer {
     flex: 0 0 auto;
     padding: 3px 10px;
@@ -413,5 +462,36 @@
 .query-name-btn:hover {
     color: var(--dbm-accent-bright);
     text-decoration: underline;
+}
+
+/* ---------------- Query-history rows ---------------- */
+.history-item-btn {
+    min-width: 0;
+    text-align: left;
+    text-decoration: none;
+    color: var(--bs-body-color);
+    overflow: hidden;
+}
+
+.history-item-btn:hover {
+    color: var(--dbm-accent-bright);
+}
+
+/* Statement preview: one line, ellipsized — the full text lives in the tooltip. */
+.history-item-sql {
+    display: block;
+    font-family: var(--bs-font-monospace);
+    font-size: 0.8rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.history-item-meta,
+.history-item-time {
+    flex: 0 0 auto;
+    font-size: 0.72rem;
+    color: var(--dbm-text-dim);
+    font-family: var(--bs-font-monospace);
 }
 

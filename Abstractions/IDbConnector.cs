@@ -58,6 +58,40 @@ namespace DbManager.Abstractions
         /// <summary>Builds the stub inserted for a function (SELECT …().</summary>
         string BuildFunctionStub(string qualifiedName);
 
+        /// <summary>
+        /// Commands that render <paramref name="sql"/>'s execution plan, run IN
+        /// ORDER on a single connection. Most engines return one "EXPLAIN <sql>"
+        /// command; T-SQL has no EXPLAIN keyword and instead returns a
+        /// SET SHOWPLAN_XML ON / statement / OFF sequence, because SHOWPLAN is a
+        /// per-session compile setting that must wrap the statement (and makes it
+        /// plan without executing). The whole sequence shares ONE connection
+        /// precisely so the session setting survives between the commands.
+        /// </summary>
+        IReadOnlyList<string> BuildExplainCommands(string sql);
+
+        /// <summary>
+        /// True when the engine can describe a table well enough for the data
+        /// editor to write to it: primary-key columns (to address a row) and
+        /// identity/auto-increment columns (so INSERTs skip generated values).
+        /// Gates the sidebar's "Data" button; the other engines return false
+        /// until their catalog queries have been verified against a live server.
+        /// </summary>
+        bool SupportsTableEditing { get; }
+
+        /// <summary>
+        /// Reads the column metadata the data editor needs for
+        /// <paramref name="qualifiedName"/> (as shown in the sidebar: bare, or
+        /// "schema.name"). Returns an empty list for engines with
+        /// <see cref="SupportsTableEditing"/> == false.
+        /// </summary>
+        Task<List<TableColumnInfo>> GetTableColumnsAsync(DbConnection conn, string qualifiedName, CancellationToken ct = default);
+
+        /// <summary>Engine-correct SQL literal for one value (used by the results grid's SQL export).</summary>
+        string FormatSqlLiteral(object? value);
+
+        /// <summary>Statement that empties a table for the SQL export: TRUNCATE, or DELETE when unsupported.</summary>
+        string BuildTruncateStatement(string quotedTable);
+
         /// <summary>First keywords that mutate data or structure, for the write-gate heuristic.</summary>
         ISet<string> WriteKeywords { get; }
 

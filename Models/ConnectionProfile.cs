@@ -37,6 +37,13 @@ namespace DbManager.Models
 
         public string Password { get; set; } = string.Empty;
 
+        /// <summary>SQL Server transport encryption mode (a
+        /// <see cref="SqlServerEncryption"/> key); ignored by the other engines.
+        /// Persisted so the connection string can be rebuilt when a server-level
+        /// profile switches database — that rebuild goes through ToFormData and
+        /// would otherwise lose the user's encryption choice.</summary>
+        public string EncryptMode { get; set; } = SqlServerEncryption.Default;
+
         public DateTimeOffset CreatedUtc { get; set; } = DateTimeOffset.UtcNow;
 
         /// <summary>Form fields reconstructed from the stored structured fields,
@@ -49,7 +56,51 @@ namespace DbManager.Models
             Username = Username,
             Password = Password,
             Database = databaseOverride ?? SelectedDatabase,
-            IsServerLevel = IsServerLevel
+            IsServerLevel = IsServerLevel,
+            EncryptMode = EncryptMode
+        };
+    }
+
+    /// <summary>
+    /// SQL Server transport encryption choices, mapped to Microsoft.Data.SqlClient
+    /// connection-string keywords. Shared by the connection form (dropdown), the
+    /// persisted profile and the connector so the keys stay in one place.
+    ///
+    /// Why this exists: the old connector hard-coded Encrypt=True with a trusted
+    /// self-signed certificate. That is right for internal boxes with self-signed
+    /// certs but wrong on both ends of the spectrum — legacy servers that don't
+    /// speak TLS at all, and hardened/cloud servers that require the certificate
+    /// chain to be validated (or a strict TDS 8.0 handshake). Those were exactly
+    /// the "inaccessible" databases.
+    /// </summary>
+    public static class SqlServerEncryption
+    {
+        /// <summary>No TLS: Encrypt=False. For old servers that reject the handshake.</summary>
+        public const string Off = "off";
+
+        /// <summary>Encrypt=True, TrustServerCertificate=True: accepts a self-signed
+        /// cert. The long-standing default, kept as such so existing profiles and
+        /// the structured form behave exactly as before.</summary>
+        public const string TrustServerCertificate = "trust";
+
+        /// <summary>Encrypt=True, TrustServerCertificate=False: validate the server
+        /// certificate against the machine's trust store (name + chain).</summary>
+        public const string VerifyCertificate = "verify";
+
+        /// <summary>Encrypt=Strict: TDS 8.0, encryption negotiated before login.</summary>
+        public const string Strict = "strict";
+
+        public const string Default = TrustServerCertificate;
+
+        /// <summary>Connection-string segment for a mode key; unknown/empty falls
+        /// back to the default (so profiles saved before this field existed, whose
+        /// value deserializes to the default, still connect).</summary>
+        public static string ToConnectionStringSegments(string? mode) => mode switch
+        {
+            Off => "Encrypt=False",
+            VerifyCertificate => "Encrypt=True;TrustServerCertificate=False",
+            Strict => "Encrypt=Strict",
+            _ => "Encrypt=True;TrustServerCertificate=True"
         };
     }
 
@@ -74,6 +125,10 @@ namespace DbManager.Models
 
         /// <summary>Database file path (SQLite only).</summary>
         public string FilePath { get; set; } = string.Empty;
+
+        /// <summary>SQL Server transport encryption mode (<see cref="SqlServerEncryption"/>);
+        /// ignored by the other engines.</summary>
+        public string EncryptMode { get; set; } = SqlServerEncryption.Default;
 
         /// <summary>When true, RawConnectionString is used as-is.</summary>
         public bool UseRaw { get; set; }

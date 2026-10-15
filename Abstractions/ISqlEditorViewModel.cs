@@ -62,6 +62,9 @@ namespace DbManager.Abstractions
         /// <summary>Executes against the active profile.</summary>
         Task<SqlEditorResult> ExecuteAsync(string sql, CancellationToken ct = default);
 
+        /// <summary>Renders the execution plan for the active profile (read-only).</summary>
+        Task<SqlEditorResult> ExplainAsync(string sql, CancellationToken ct = default);
+
         /// <summary>Write-gate heuristic, against the active profile's dialect.</summary>
         bool IsWriteStatement(string sql);
     }

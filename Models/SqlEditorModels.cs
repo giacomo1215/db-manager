@@ -102,5 +102,12 @@ namespace DbManager.Models
         /// pane — the SSMS convention — instead of a generic toast-only flow.
         /// </summary>
         public string? Error { get; set; }
+
+        /// <summary>
+        /// True when the run was aborted by the user's Cancel button (the
+        /// CancellationToken fired). Distinguishes a deliberate stop from a real
+        /// server error so the UI does not raise a scary error toast for it.
+        /// </summary>
+        public bool Cancelled { get; set; }
     }
 }

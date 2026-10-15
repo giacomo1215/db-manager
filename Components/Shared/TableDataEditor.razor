@@ -1,0 +1,458 @@
+@using System.Data
+@using DbManager.Services
+@inject ITableDataService DataService
+@inject IToastService Toasts
+@inject IJSRuntime JS
+
+@* Editable data grid for one table, opened as a modal dialog. Cells are edited
+   in place; Apply turns the tracked changes into INSERT/UPDATE/DELETE and runs
+   them in ONE transaction (all-or-nothing). Engines without SupportsTableEditing
+   (everything but SQL Server for now) never show the sidebar "Data" button, and
+   a table without a primary key loads view-only — a row cannot be addressed
+   without one. *@
+
+<dialog id="@_dialogId" class="dbm-data-dialog">
+    <div class="dbm-data-dialog-body">
+        <div class="dbm-data-head">
+            <h5 class="mb-0 text-truncate" title="@_tableName">
+                <i class="bi bi-table me-2"></i>@(_tableName ?? "Table")
+            </h5>
+            @if (_loaded && _error is null)
+            {
+                <span class="text-body-secondary small ms-2 flex-shrink-0">
+                    @_rows.Count row@(_rows.Count == 1 ? "" : "s")
+                    @if (_limit > 0 && _rows.Count >= _limit)
+                    {
+                        <span> (first @_limit)</span>
+                    }
+                </span>
+            }
+            <span class="flex-grow-1"></span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" title="Reload from the database"
+                    disabled="@(_busy)" @onclick="RequestReload">
+                <i class="bi bi-arrow-clockwise"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" title="Add a new row"
+                    disabled="@(!CanEdit)" @onclick="AddRow">
+                <i class="bi bi-plus-lg me-1"></i>Row
+            </button>
+            <button type="button" class="btn btn-sm btn-primary"
+                    disabled="@(!CanApply)" @onclick="RequestApply">
+                <i class="bi bi-check2-circle me-1"></i>Apply@(ChangeCount > 0 ? $" ({ChangeCount})" : "")
+            </button>
+            <button type="button" class="btn-close ms-1" aria-label="Close" @onclick="CloseAsync"></button>
+        </div>
+
+        @if (_error is not null)
+        {
+            <div class="alert alert-danger d-flex align-items-center gap-2 mx-2 mt-2 mb-0 py-2" role="alert">
+                <i class="bi bi-x-circle-fill"></i>
+                <span class="small flex-grow-1">@_error</span>
+            </div>
+        }
+        else if (_loaded && !_hasPrimaryKey)
+        {
+            <div class="alert alert-warning d-flex align-items-center gap-2 mx-2 mt-2 mb-0 py-2" role="alert">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <span class="small flex-grow-1">
+                    This table has no primary key — it can be browsed but not edited
+                    (a row cannot be addressed without one).
+                </span>
+            </div>
+        }
+
+        @if (_confirm == "apply")
+        {
+            <div class="alert alert-warning d-flex align-items-center gap-2 mx-2 mt-2 mb-0 py-2" role="alert">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <span class="small flex-grow-1">Apply @ChangeCount change@(ChangeCount == 1 ? "" : "s") to @_tableName?</span>
+                <button type="button" class="btn btn-sm btn-warning" @onclick="ConfirmApplyAsync">Apply</button>
+                <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelConfirm">Cancel</button>
+            </div>
+        }
+        else if (_confirm == "reload")
+        {
+            <div class="alert alert-danger d-flex align-items-center gap-2 mx-2 mt-2 mb-0 py-2" role="alert">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <span class="small flex-grow-1">Reload and discard @ChangeCount unsaved change@(ChangeCount == 1 ? "" : "s")?</span>
+                <button type="button" class="btn btn-sm btn-danger" @onclick="ConfirmReloadAsync">Reload</button>
+                <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelConfirm">Cancel</button>
+            </div>
+        }
+
+        <div class="dbm-data-scroll">
+            @if (_busy && !_loaded)
+            {
+                <div class="dbm-data-loading">
+                    <span class="spinner-border spinner-border-sm text-primary" role="status" aria-hidden="true"></span>
+                    <span class="ms-2">Loading @_tableName…</span>
+                </div>
+            }
+            else if (_loaded && _error is null && _columns.Count == 0)
+            {
+                <div class="dbm-data-empty">No columns found for this table.</div>
+            }
+            else if (_loaded && _error is null && _rows.Count == 0)
+            {
+                <div class="dbm-data-empty">No rows.</div>
+            }
+            else if (_loaded && _error is null)
+            {
+                <table class="dbm-data-grid">
+                    <thead>
+                        <tr>
+                            <th class="dbm-data-rowmark"><span class="visually-hidden">Row actions</span></th>
+                            @for (var i = 0; i < _columns.Count; i++)
+                            {
+                                var index = i;
+                                <th class="@(_columns[index].IsPrimaryKey ? "dbm-data-pk" : "")">
+                                    <span class="dbm-data-colname">@_columns[index].Name</span>
+                                    @if (_columns[index].IsPrimaryKey)
+                                    {
+                                        <span class="badge text-bg-primary ms-1" title="Primary key">PK</span>
+                                    }
+                                    @if (_columns[index].IsIdentity)
+                                    {
+                                        <span class="badge text-bg-secondary ms-1" title="Auto-generated value">ID</span>
+                                    }
+                                    <div class="dbm-data-coltype">@_columns[index].DataType</div>
+                                </th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var row in _rows)
+                        {
+                            <tr @key="row.Key"
+                                class="@(row.IsNew ? "dbm-data-new" : row.IsDeleted ? "dbm-data-deleted" : "")">
+                                <td class="dbm-data-rowmark">
+                                    <button type="button" class="dbm-data-remove"
+                                            title="@(row.IsNew ? "Discard row" : row.IsDeleted ? "Restore row" : "Mark for deletion")"
+                                            @onclick="() => RemoveOrRestore(row)">
+                                        <i class="bi @(row.IsNew ? "bi-x" : row.IsDeleted ? "bi-arrow-counterclockwise" : "bi-trash")"></i>
+                                    </button>
+                                </td>
+                                @for (var i = 0; i < _columns.Count; i++)
+                                {
+                                    var index = i;
+                                    <td class="@(_columns[index].IsPrimaryKey ? "dbm-data-pk" : "")">
+                                        @if (_columns[index].IsIdentity && row.IsNew)
+                                        {
+                                            <span class="dbm-data-auto">auto</span>
+                                        }
+                                        else if (_columns[index].IsIdentity)
+                                        {
+                                            @* Identity is engine-supplied: show it, never write it. *@
+                                            <input type="text" class="dbm-data-input" value="@row.Values[index]" disabled />
+                                        }
+                                        else
+                                        {
+                                            <input type="text" class="dbm-data-input"
+                                                   value="@row.Values[index]"
+                                                   @oninput="e => OnCellInput(row, index, e)" />
+                                        }
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+
+        @* Footer: the empty-cell rule, so the NULL behavior is not a surprise. *@
+        <div class="dbm-data-foot">
+            Empty cell → NULL (for a NOT NULL column it writes an empty value).
+            Values are sent as literals and rely on the server's implicit conversion.
+        </div>
+    </div>
+</dialog>
+
+@code {
+    /// <summary>Active connection the grid reads from and writes to.</summary>
+    [Parameter] public ConnectionProfile? Profile { get; set; }
+
+    /// <summary>Active engine's dialect — quoting and value literals.</summary>
+    [Parameter, EditorRequired] public IDbConnector Connector { get; set; } = default!;
+
+    /// <summary>Row cap for one load; also what the "first N" hint reports.</summary>
+    [Parameter] public int RowLimit { get; set; } = 200;
+
+    private readonly string _dialogId = "dbm-data-" + Guid.NewGuid().ToString("N");
+
+    private ConnectionProfile? _profile;
+    private string? _tableName;
+    private int _limit;
+
+    private List<TableColumnInfo> _columns = [];
+    private List<EditRow> _rows = [];
+    private bool _hasPrimaryKey;
+    private bool _loaded;
+    private bool _busy;
+    private string? _error;
+
+    // Which inline confirmation is showing: "" | "apply" | "reload".
+    private string _confirm = "";
+
+    /// <summary>
+    /// One grid row. New rows have IsNew set (and empty Originals); a deleted
+    /// row is flagged rather than removed so the user can undo before Apply.
+    /// Values are the cell text (empty = the NULL rule); Originals keep the
+    /// loaded DB values so an edit can be detected and a row addressed by its key.
+    /// </summary>
+    private sealed class EditRow
+    {
+        public Guid Key { get; } = Guid.NewGuid();
+        public bool IsNew { get; set; }
+        public bool IsDeleted { get; set; }
+        public string[] Values { get; set; } = [];
+        public object?[] Originals { get; set; } = [];
+    }
+
+    /// <summary>Editing is possible only with a primary key (rows must be addressable).</summary>
+    private bool CanEdit => _hasPrimaryKey && !_busy;
+
+    private bool CanApply => _hasPrimaryKey && !_busy && ChangeCount > 0;
+
+    private int ChangeCount => _rows.Count(r => r.IsNew || r.IsDeleted || IsRowDirty(r));
+
+    /// <summary>Opens the dialog for a table and loads its rows.</summary>
+    public async Task OpenAsync(string qualifiedName)
+    {
+        _profile = Profile;
+        _tableName = qualifiedName;
+        _limit = Math.Max(1, RowLimit);
+        _rows = [];
+        _columns = [];
+        _loaded = false;
+        _error = null;
+        _confirm = "";
+
+        // Open first, then load: the spinner shows inside the modal while a slow
+        // table reads, instead of the page looking stuck before the dialog appears.
+        await JS.InvokeVoidAsync("dbmSite.openDialog", _dialogId);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_profile is null || _tableName is null)
+            return;
+
+        _busy = true;
+        _loaded = false;
+        _error = null;
+        _confirm = "";
+        StateHasChanged();
+
+        var data = await DataService.LoadAsync(_profile, _tableName, _limit);
+
+        _columns = data.Columns;
+        _hasPrimaryKey = data.HasPrimaryKey;
+        _error = data.Error;
+        _rows = [];
+
+        if (data.Error is null)
+        {
+            foreach (DataRow row in data.Rows.Rows)
+            {
+                var values = new string[_columns.Count];
+                var originals = new object?[_columns.Count];
+                for (var i = 0; i < _columns.Count; i++)
+                {
+                    // Align by name: SELECT * preserves table order (== metadata
+                    // order), but a name lookup is robust to any ordering drift.
+                    var colIndex = data.Rows.Columns.IndexOf(_columns[i].Name);
+                    object? value = colIndex >= 0 ? row[colIndex] : null;
+                    originals[i] = value is DBNull ? null : value;
+                    values[i] = ResultExporter.Display(value);
+                }
+                _rows.Add(new EditRow { Values = values, Originals = originals });
+            }
+            _loaded = true;
+        }
+
+        _busy = false;
+        StateHasChanged();
+    }
+
+    private void RequestReload()
+    {
+        if (ChangeCount > 0)
+            _confirm = "reload";
+        else
+            _ = LoadAsync();
+    }
+
+    /// <summary>Closes the dialog (also called by the page when the connection switches).</summary>
+    public async Task CloseAsync()
+    {
+        _confirm = "";
+        await JS.InvokeVoidAsync("dbmSite.closeDialog", _dialogId);
+    }
+
+    private void CancelConfirm() => _confirm = "";
+
+    private void AddRow()
+    {
+        var values = new string[_columns.Count];
+        for (var i = 0; i < values.Length; i++)
+            values[i] = string.Empty;
+        // Insert at the top so a new row is immediately visible without scrolling.
+        _rows.Insert(0, new EditRow { IsNew = true, Values = values, Originals = new object?[_columns.Count] });
+        _confirm = "";
+    }
+
+    private void RemoveOrRestore(EditRow row)
+    {
+        if (row.IsNew)
+            _rows.Remove(row);
+        else
+            row.IsDeleted = !row.IsDeleted;
+        _confirm = "";
+    }
+
+    private void OnCellInput(EditRow row, int index, ChangeEventArgs e)
+    {
+        row.Values[index] = e.Value?.ToString() ?? string.Empty;
+        // A fresh edit invalidates a pending confirmation (its count is now stale).
+        _confirm = "";
+    }
+
+    // ---------------- Change tracking ----------------
+
+    private static bool IsRowDirty(EditRow row)
+    {
+        if (row.IsNew)
+            return true;
+        for (var i = 0; i < row.Values.Length; i++)
+        {
+            if (!string.Equals(row.Values[i], ResultExporter.Display(row.Originals[i]), StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    // ---------------- Apply ----------------
+
+    private void RequestApply()
+    {
+        if (CanApply)
+            _confirm = "apply";
+    }
+
+    private async Task ConfirmApplyAsync()
+    {
+        _confirm = "";
+        if (_profile is null)
+            return;
+
+        var script = BuildApplyScript();
+        if (string.IsNullOrWhiteSpace(script))
+        {
+            _error = "Nothing to apply.";
+            return;
+        }
+
+        var changed = ChangeCount;
+        _busy = true;
+        StateHasChanged();
+
+        var result = await DataService.ApplyAsync(_profile, script, changed);
+        _busy = false;
+
+        if (result.Error is not null)
+        {
+            // Nothing was applied (the run is one transaction, rolled back on any
+            // failure or missed row): keep the edits so the user can reload + retry.
+            _error = result.Error;
+            Toasts.Show("Apply failed", result.Error, ToastKind.Danger, 8);
+            StateHasChanged();
+            return;
+        }
+
+        Toasts.Show("Applied", $"{changed} change{(changed == 1 ? "" : "s")} saved.", ToastKind.Success);
+        await LoadAsync();
+    }
+
+    private async Task ConfirmReloadAsync() => await LoadAsync();
+
+    /// <summary>
+    /// Turns the tracked changes into one script: an INSERT per new row, a
+    /// DELETE per flagged row and an UPDATE per edited row, each addressed by
+    /// the row's ORIGINAL primary-key values. Empty when there is nothing to do.
+    /// </summary>
+    private string BuildApplyScript()
+    {
+        var table = Connector.QuoteQualifiedName(_tableName!);
+        var sb = new System.Text.StringBuilder();
+
+        // 1. New rows → INSERT. Identity columns are engine-generated, so omitted.
+        foreach (var row in _rows.Where(r => r.IsNew))
+        {
+            var cols = new List<string>();
+            var lits = new List<string>();
+            for (var i = 0; i < _columns.Count; i++)
+            {
+                if (_columns[i].IsIdentity)
+                    continue;
+                cols.Add(Connector.QuoteIdentifier(_columns[i].Name));
+                lits.Add(CellLiteral(row, i));
+            }
+            sb.Append(cols.Count == 0
+                ? $"INSERT INTO {table} DEFAULT VALUES;\r\n"
+                : $"INSERT INTO {table} ({string.Join(", ", cols)}) VALUES ({string.Join(", ", lits)});\r\n");
+        }
+
+        // 2. Deleted rows → DELETE.
+        foreach (var row in _rows.Where(r => !r.IsNew && r.IsDeleted))
+            sb.Append($"DELETE FROM {table} WHERE {BuildKeyPredicate(row)};\r\n");
+
+        // 3. Edited rows → UPDATE of the changed columns only.
+        foreach (var row in _rows.Where(r => !r.IsNew && !r.IsDeleted && IsRowDirty(r)))
+        {
+            var sets = new List<string>();
+            for (var i = 0; i < _columns.Count; i++)
+            {
+                if (string.Equals(row.Values[i], ResultExporter.Display(row.Originals[i]), StringComparison.Ordinal))
+                    continue;
+                sets.Add($"{Connector.QuoteIdentifier(_columns[i].Name)} = {CellLiteral(row, i)}");
+            }
+            if (sets.Count == 0)
+                continue;
+            sb.Append($"UPDATE {table} SET {string.Join(", ", sets)} WHERE {BuildKeyPredicate(row)};\r\n");
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// WHERE clause matching the row by its original primary-key values (the key
+    /// may have been edited; the row on the server still holds the original).
+    /// </summary>
+    private string BuildKeyPredicate(EditRow row)
+    {
+        var parts = new List<string>();
+        for (var i = 0; i < _columns.Count; i++)
+        {
+            if (!_columns[i].IsPrimaryKey)
+                continue;
+            parts.Add($"{Connector.QuoteIdentifier(_columns[i].Name)} = {Connector.FormatSqlLiteral(row.Originals[i])}");
+        }
+        return string.Join(" AND ", parts);
+    }
+
+    /// <summary>
+    /// SQL literal for one edited cell. An empty cell means NULL when the column
+    /// is nullable (the rule TableColumnInfo.IsNullable documents); for a NOT NULL
+    /// column it can only mean the empty value. Text is sent as a string literal
+    /// and relies on the server's implicit conversion to the column type.
+    /// </summary>
+    private string CellLiteral(EditRow row, int i)
+    {
+        var text = row.Values[i];
+        if (string.IsNullOrEmpty(text) && _columns[i].IsNullable)
+            return "NULL";
+        return Connector.FormatSqlLiteral(text);
+    }
+}

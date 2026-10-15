@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -8,6 +9,7 @@ using System.Threading.Tasks;
 using DbManager.Abstractions;
 using DbManager.Models;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace DbManager.Services
 {
@@ -25,23 +27,18 @@ namespace DbManager.Services
     {
         private readonly IDbConnectorRegistry _registry;
         private readonly int _commandTimeout;
-
-        // GO batch separator: a line containing only "GO", case-insensitive. SSMS
-        // treats GO the same way (its batches never reach the server). Only used
-        // for engines with SupportsGoBatches (T-SQL); the others always get the
-        // whole script as a single batch. Limitation (accepted heuristic for an
-        /// admin tool): a "GO" inside a string literal or comment would be split.
-        private static readonly Regex GoBatchRegex = new(@"^\s*GO\s*$", RegexOptions.IgnoreCase | RegexOptions.Multiline);
+        private readonly ILogger<SqlEditorService> _logger;
 
         // Comments are stripped before write-detection so a batch that only LOOKS
         // like a write behind "--" or /* */ is not misdetected (and vice versa).
         private static readonly Regex LineCommentRegex = new(@"--[^\n]*");
         private static readonly Regex BlockCommentRegex = new(@"/\*[\s\S]*?\*/");
 
-        public SqlEditorService(IDbConnectorRegistry registry, IConfiguration configuration)
+        public SqlEditorService(IDbConnectorRegistry registry, IConfiguration configuration, ILogger<SqlEditorService> logger)
         {
             _registry = registry;
             _commandTimeout = configuration.GetValue("SqlEditor:CommandTimeoutSeconds", 60);
+            _logger = logger;
         }
 
         /// <inheritdoc />
@@ -113,7 +110,7 @@ namespace DbManager.Services
 
                 // GO batches are executed sequentially, each on its own connection:
                 // simplest mental model and matches SSMS (GO also breaks variable scope).
-                var batches = SplitOnGo(sql, connector).Where(b => !string.IsNullOrWhiteSpace(b)).ToList();
+                var batches = SqlExecutionHelpers.SplitOnGo(sql, connector).Where(b => !string.IsNullOrWhiteSpace(b)).ToList();
                 if (batches.Count == 0)
                 {
                     result.Error = "Empty query.";
@@ -133,43 +130,13 @@ namespace DbManager.Services
                     // One iteration per result set. FieldCount == 0 means the
                     // statement produced rows-AFFECTED info only (INSERT/UPDATE/
                     // DELETE), not a grid — nothing to load there.
-                    do
+                    while (true)
                     {
                         if (reader.FieldCount > 0)
-                        {
-                            // Deliberately NOT DataTable.Load(reader): Load CLOSES
-                            // the reader when it thinks it is done, so the loop's
-                            // NextResultAsync throws InvalidOperationException and
-                            // kills the circuit, and it silently swallowed every
-                            // result set after the first. Filling the DataTable
-                            // manually keeps the reader open and walks ALL result
-                            // sets ourselves.
-                            var table = new DataTable();
-
-                            // Columns first, from the reader's metadata. Duplicate
-                            // aliases ("SELECT 1 AS a, 2 AS a") would throw
-                            // DuplicateNameException in DataTable.Columns.Add, so
-                            // they get a " (2)" suffix like a spreadsheet would.
-                            for (var i = 0; i < reader.FieldCount; i++)
-                            {
-                                var name = reader.GetName(i);
-                                var baseName = name;
-                                for (var dup = 2; table.Columns.Contains(name); dup++)
-                                    name = $"{baseName} ({dup})";
-                                table.Columns.Add(name, reader.GetFieldType(i));
-                            }
-
-                            while (await reader.ReadAsync(ct))
-                            {
-                                var row = table.NewRow();
-                                for (var i = 0; i < reader.FieldCount; i++)
-                                    row[i] = reader.GetValue(i);
-                                table.Rows.Add(row);
-                            }
-
-                            result.ResultSets.Add(table);
-                        }
-                    } while (await reader.NextResultAsync(ct));
+                            result.ResultSets.Add(await SqlExecutionHelpers.ReadCurrentTableAsync(reader, ct));
+                        if (!await reader.NextResultAsync(ct))
+                            break;
+                    }
 
                     // RecordsAffected only becomes reliable once every row has been
                     // consumed AND the reader is closed (SqlClient contract; other
@@ -181,11 +148,21 @@ namespace DbManager.Services
                         result.RowsAffected += reader.RecordsAffected;
                 }
             }
+            catch (OperationCanceledException)
+            {
+                // The user pressed Cancel (or the circuit tore down): the
+                // CancellationToken fired and the provider aborted the command.
+                // A deliberate stop, not a failure — flagged so the page skips the
+                // error toast and shows a plain "cancelled" note instead.
+                result.Cancelled = true;
+                result.Error = "Query cancelled.";
+            }
             catch (Exception ex) when (ex is System.Data.Common.DbException or InvalidOperationException)
             {
                 // SqlException, MySqlException, NpgsqlException and SqliteException
                 // all derive from DbException: engine-level errors (bad SQL, wrong
                 // credentials, timeout). Shown inline in the results pane like SSMS.
+                _logger.LogError(ex, "Query failed on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 result.Error = ex.Message;
             }
             catch (Exception ex)
@@ -193,6 +170,63 @@ namespace DbManager.Services
                 // Safety net so NOTHING here can terminate the circuit. Includes
                 // the exception type because non-DB failures (e.g. invalid state or
                 // provider bugs) are harder to diagnose from Message alone.
+                _logger.LogError(ex, "Query failed (unexpected) on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
+                result.Error = $"{ex.GetType().Name}: {ex.Message}";
+            }
+
+            stopwatch.Stop();
+            result.ElapsedMs = stopwatch.ElapsedMilliseconds;
+            return result;
+        }
+
+        /// <inheritdoc />
+        public async Task<SqlEditorResult> ExplainAsync(ConnectionProfile profile, string sql, CancellationToken ct = default)
+        {
+            var result = new SqlEditorResult();
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            try
+            {
+                var connector = ResolveConnector(profile);
+                var commands = connector.BuildExplainCommands(sql);
+
+                // ONE connection for the whole sequence: T-SQL's SET SHOWPLAN_XML is
+                // a session setting that must survive from the ON command to the
+                // statement (ExecuteAsync's per-batch connections would lose it).
+                await using var conn = connector.CreateConnection(profile.ConnectionString);
+                await conn.OpenAsync(ct);
+
+                foreach (var commandText in commands)
+                {
+                    await using var cmd = conn.CreateCommand();
+                    cmd.CommandText = commandText;
+                    cmd.CommandTimeout = _commandTimeout;
+
+                    await using var reader = await cmd.ExecuteReaderAsync(ct);
+                    while (true)
+                    {
+                        if (reader.FieldCount > 0)
+                            result.ResultSets.Add(await SqlExecutionHelpers.ReadCurrentTableAsync(reader, ct));
+                        if (!await reader.NextResultAsync(ct))
+                            break;
+                    }
+                    if (!reader.IsClosed)
+                        await reader.CloseAsync();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                result.Cancelled = true;
+                result.Error = "Query cancelled.";
+            }
+            catch (Exception ex) when (ex is System.Data.Common.DbException or InvalidOperationException)
+            {
+                _logger.LogError(ex, "Explain failed on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
+                result.Error = ex.Message;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Explain failed (unexpected) on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 result.Error = $"{ex.GetType().Name}: {ex.Message}";
             }
 
@@ -207,7 +241,7 @@ namespace DbManager.Services
             var connector = ResolveConnector(profile);
             var writeKeywords = connector.WriteKeywords;
 
-            foreach (var batch in SplitOnGo(sql, connector))
+            foreach (var batch in SqlExecutionHelpers.SplitOnGo(sql, connector))
             {
                 var bare = StripComments(batch).Trim();
                 if (bare.Length == 0)
@@ -248,13 +282,6 @@ namespace DbManager.Services
 
             return false;
         }
-
-        /// <summary>
-        /// Splits a script on GO batch separators for dialects that support them;
-        /// everything else is one single batch (the common case).
-        /// </summary>
-        private static string[] SplitOnGo(string sql, IDbConnector connector) =>
-            connector.SupportsGoBatches ? GoBatchRegex.Split(sql) : [sql];
 
         /// <summary>
         /// Removes -- line comments and /* */ block comments so keyword detection
