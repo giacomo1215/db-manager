@@ -370,13 +370,48 @@
     padding: 0.5rem 0.75rem;
 }
 
+.sql-plan-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+}
+
 .sql-plan-label {
     font-size: 0.78rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--dbm-text-dim);
-    margin-bottom: 0.4rem;
+}
+
+/* Graph / XML view switcher — kept small so it reads as part of the label row. */
+.sql-plan-toggle .btn {
+    padding: 0.05rem 0.5rem;
+    font-size: 0.72rem;
+    line-height: 1.4;
+}
+
+/* Graphical plan (html-query-plan): its own scroll surface, since the operator
+   graph is both wider and taller than the pane. */
+.sql-plan-graph {
+    overflow: auto;
+    min-height: 200px;
+    background: var(--dbm-bg, #ffffff);
+    border: 1px solid var(--dbm-border);
+    border-radius: 4px;
+}
+
+/* qp.css draws nodes on a white base; keep them legible in dark mode without
+   recoloring each operator class (the icons are a light-background sprite). */
+.sql-plan-graph :is(.qp-root, .qp-statement) {
+    color: #1f2328;
+}
+
+/* html-query-plan defaults to a fixed-width graph; let it use the pane width. */
+.sql-plan-graph .qp-root {
+    width: 100%;
 }
 
 /* Plan lines are wide and indentation-significant: monospace, no wrap. */
