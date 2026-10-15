@@ -2,6 +2,7 @@ using DbManager.Abstractions;
 using DbManager.Components;
 using DbManager.Providers;
 using DbManager.Services;
+using DbManager.Services.Logging;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 #if DESKTOP
@@ -26,6 +27,14 @@ if (string.IsNullOrEmpty(configuredUrls))
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+// --- Text log: dependency-free file logger. Warning+ (i.e. the errors the app
+// surfaces and the ones it swallows) go to logs/db-manager-<date>.txt in the
+// working directory. Overridable via Logging:File:Directory. Also add console
+// output so the Server release prints errors to its console too. ---
+var logDirectory = builder.Configuration["Logging:File:Directory"]
+    ?? Path.Combine(Directory.GetCurrentDirectory(), "logs");
+builder.Logging.AddProvider(new FileLoggerProvider(logDirectory));
 
 // --- Engine connectors: one singleton per engine. Adding a new database is
 // one class implementing IDbConnector + one registration here. ---
@@ -64,13 +73,31 @@ builder.Services.AddSingleton<IPreferenceStore, PreferenceStore>();
 // key, so it is per-circuit like ISessionVault) + stateless backup format facade. ---
 builder.Services.AddSingleton<IQueryBackupService, QueryBackupService>();
 builder.Services.AddScoped<IQueryStore, QueryStore>();
+// Rolling query history — same file, same per-circuit vault key, same never-throw policy.
+builder.Services.AddScoped<IQueryHistoryStore, QueryHistoryStore>();
 
 // --- SQL editor: scoped per circuit (schema cache lives in the ViewModel). ---
 builder.Services.AddScoped<IToastService, ToastService>();
 builder.Services.AddScoped<ISqlEditorService, SqlEditorService>();
 builder.Services.AddScoped<ISqlEditorViewModel, SqlEditorViewModel>();
+// Interactive transaction session — one open connection per circuit, disposed with it.
+builder.Services.AddScoped<ISqlTransactionSession, SqlTransactionSession>();
+// Table data editor: per-circuit load of a table's rows + key/identity metadata.
+builder.Services.AddScoped<ITableDataService, TableDataService>();
 
 var app = builder.Build();
+
+// --- Last-resort logging. Blazor Server swallows most exceptions per circuit,
+// but a genuinely unhandled one (background thread, fire-and-forget task) would
+// otherwise vanish. Both hooks write the full exception to the text log. ---
+var globalLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Global");
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    globalLogger.LogCritical(e.ExceptionObject as Exception, "Unhandled exception");
+TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    globalLogger.LogError(e.Exception, "Unobserved task exception");
+    e.SetObserved();
+};
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())

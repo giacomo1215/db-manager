@@ -39,7 +39,57 @@ namespace DbManager.Providers
             TopSnippet = "SELECT TOP 20 *\nFROM "
         };
 
-        public DbConnection CreateConnection(string connectionString) => new SqlConnection(connectionString);
+        public DbConnection CreateConnection(string connectionString) =>
+            new SqlConnection(SanitizeConnectionString(connectionString));
+
+        /// <summary>
+        /// Keywords SSMS's connection-string box tolerates but
+        /// Microsoft.Data.SqlClient rejects. Fed raw, any one of them makes the
+        /// WHOLE string throw "Keyword not supported: '…'" at construction — the
+        /// classic "works in SSMS, not here" case. Stripped before the string
+        /// reaches SqlConnection. "Command Timeout" is the usual offender; the
+        /// app controls command timeouts itself (SqlEditor:CommandTimeoutSeconds),
+        /// so dropping it loses nothing.
+        /// </summary>
+        private static readonly HashSet<string> SsmsOnlyKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Command Timeout"
+        };
+
+        /// <summary>
+        /// Removes <see cref="SsmsOnlyKeywords"/> from a raw connection string,
+        /// parsing with the generic DbConnectionStringBuilder (which accepts any
+        /// keyword) and rebuilding without them. Anything else is passed through
+        /// untouched — including an unparseable string, so the provider reports
+        /// its own error rather than a silent rewrite.
+        /// </summary>
+        private static string SanitizeConnectionString(string connectionString)
+        {
+            if (string.IsNullOrWhiteSpace(connectionString))
+                return connectionString;
+
+            DbConnectionStringBuilder builder;
+            try
+            {
+                builder = new DbConnectionStringBuilder { ConnectionString = connectionString };
+            }
+            catch (ArgumentException)
+            {
+                return connectionString;
+            }
+
+            var removed = false;
+            foreach (var key in builder.Keys.Cast<string>().ToList())
+            {
+                if (SsmsOnlyKeywords.Contains(key))
+                {
+                    builder.Remove(key);
+                    removed = true;
+                }
+            }
+
+            return removed ? builder.ConnectionString : connectionString;
+        }
 
         public async Task TestConnectionAsync(string connectionString, CancellationToken ct = default)
         {
@@ -176,6 +226,62 @@ namespace DbManager.Providers
         public string BuildFunctionStub(string qualifiedName) =>
             $"SELECT dbo.{QuoteIdentifier(qualifiedName)}(";
 
+        /// <summary>
+        /// T-SQL has no EXPLAIN: the estimated plan comes from SET SHOWPLAN_XML,
+        /// which makes the following statement compile (not run) and return its
+        /// plan as a result set. Each statement is its own command so SHOWPLAN
+        /// stays the only statement in its batch (a T-SQL requirement); the
+        /// sequence runs on one connection so the setting persists.
+        /// </summary>
+        public IReadOnlyList<string> BuildExplainCommands(string sql) =>
+            ["SET SHOWPLAN_XML ON;", sql, "SET SHOWPLAN_XML OFF;"];
+
+        public bool SupportsTableEditing => true;
+
+        /// <summary>
+        /// Column metadata via sys.* rather than INFORMATION_SCHEMA: identity and
+        /// primary-key membership are not exposed by INFORMATION_SCHEMA.COLUMNS.
+        /// The qualified name is split on its last dot (bare → dbo); QUOTENAME +
+        /// OBJECT_ID resolves it safely even for names with spaces or dots.
+        /// </summary>
+        public async Task<List<TableColumnInfo>> GetTableColumnsAsync(DbConnection conn, string qualifiedName, CancellationToken ct = default)
+        {
+            var lastDot = qualifiedName.LastIndexOf('.');
+            var schema = lastDot < 0 ? "dbo" : qualifiedName[..lastDot];
+            var table = lastDot < 0 ? qualifiedName : qualifiedName[(lastDot + 1)..];
+
+            const string sql = @"
+                SELECT c.name AS Name,
+                       ty.name AS DataType,
+                       CAST(c.is_nullable AS bit) AS IsNullable,
+                       CAST(c.is_identity AS bit) AS IsIdentity,
+                       CAST(CASE WHEN pk.name IS NULL THEN 0 ELSE 1 END AS bit) AS IsPrimaryKey
+                FROM sys.columns c
+                JOIN sys.types ty ON ty.user_type_id = c.user_type_id
+                LEFT JOIN (
+                    SELECT ic.name
+                    FROM sys.indexes i
+                    JOIN sys.index_columns ix ON ix.object_id = i.object_id AND ix.index_id = i.index_id
+                    JOIN sys.columns ic ON ic.object_id = ix.object_id AND ic.column_id = ix.column_id
+                    WHERE i.is_primary_key = 1
+                      AND i.object_id = OBJECT_ID(QUOTENAME(@schema) + '.' + QUOTENAME(@table))
+                ) pk ON pk.name = c.name
+                WHERE c.object_id = OBJECT_ID(QUOTENAME(@schema) + '.' + QUOTENAME(@table))
+                ORDER BY c.column_id;";
+
+            var rows = await conn.QueryAsync<(string Name, string DataType, bool IsNullable, bool IsIdentity, bool IsPrimaryKey)>(
+                new CommandDefinition(sql, new { schema, table }, cancellationToken: ct));
+
+            return rows.Select(r => new TableColumnInfo
+            {
+                Name = r.Name,
+                DataType = r.DataType,
+                IsNullable = r.IsNullable,
+                IsIdentity = r.IsIdentity,
+                IsPrimaryKey = r.IsPrimaryKey
+            }).ToList();
+        }
+
         public string FormatSqlLiteral(object? value) =>
             ConnectorHelpers.FormatSqlLiteral(value, hexLiteral: true, nativeBool: false, unicodePrefix: true);
 
@@ -185,8 +291,6 @@ namespace DbManager.Providers
         public string BuildConnectionString(ConnectionFormData form)
         {
             var port = form.Port ?? DefaultPort;
-            // TrustServerCertificate keeps quick-connect working against servers
-            // with self-signed certificates — the common case for internal boxes.
             var cs = $"Server={ConnectorHelpers.EscapeCsValue(form.Host)},{port};";
             // Empty database = server-level profile with nothing picked yet:
             // omitting the segment lands on the login's default (master), like SSMS.
@@ -194,7 +298,7 @@ namespace DbManager.Providers
                 cs += $"Database={ConnectorHelpers.EscapeCsValue(form.Database)};";
             cs += $"User Id={ConnectorHelpers.EscapeCsValue(form.Username)};"
                 + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)};"
-                + "Encrypt=True;TrustServerCertificate=True";
+                + SqlServerEncryption.ToConnectionStringSegments(form.EncryptMode);
             return cs;
         }
 
@@ -208,7 +312,7 @@ namespace DbManager.Providers
             return $"Server={ConnectorHelpers.EscapeCsValue(form.Host)},{port};"
                 + $"User Id={ConnectorHelpers.EscapeCsValue(form.Username)};"
                 + $"Password={ConnectorHelpers.EscapeCsValue(form.Password)};"
-                + "Encrypt=True;TrustServerCertificate=True";
+                + SqlServerEncryption.ToConnectionStringSegments(form.EncryptMode);
         }
 
         public async Task<List<string>> ListDatabasesAsync(DbConnection conn, CancellationToken ct = default)

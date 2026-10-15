@@ -6,6 +6,8 @@
 @inject ISqlEditorService EditorService
 @inject ISessionVault SessionVault
 @inject IQueryStore QueryStore
+@inject IQueryHistoryStore HistoryStore
+@inject ISqlTransactionSession TxSession
 @inject IDbConnectorRegistry Registry
 @inject IToastService Toasts
 @inject ISettingsService Settings
@@ -43,7 +45,20 @@
         }
     </div>
     <div class="d-flex flex-row gap-2 align-items-center">
-        <span class="text-body-secondary small">F5 / Ctrl+E to run</span>
+        @* Live run status: a long query must not look like a frozen app, so a
+           spinner and a ticking seconds counter stay visible for the whole run.
+           Re-rendered ~4x/sec by the run ticker while _isRunning is true. *@
+        @if (_isRunning)
+        {
+            <span class="text-primary small d-inline-flex align-items-center gap-1">
+                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                Running @(_runWatch.Elapsed.TotalSeconds.ToString("0.0"))s
+            </span>
+        }
+        else
+        {
+            <span class="text-body-secondary small">F5 / Ctrl+E to run</span>
+        }
         @* Sidebar toggle: collapses the schema browser so the editor takes the
            full width — handy when writing long queries against known names. *@
         <button type="button" class="btn btn-sm btn-outline-secondary"
@@ -63,6 +78,43 @@
                 title="Saved queries" @onclick="OpenQueriesDialogAsync">
             <i class="bi bi-bookmark-star"></i>
         </button>
+        @* Rolling query history: every executed statement, newest first. *@
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                title="Query history" @onclick="OpenHistoryDialogAsync">
+            <i class="bi bi-clock-history"></i>
+        </button>
+        @* Cancel only exists while a run is in flight; it trips the run's
+           CancellationTokenSource so a runaway query can be stopped. *@
+        @if (_isRunning)
+        {
+            <button type="button" class="btn btn-sm btn-outline-danger" @onclick="CancelRun">
+                <i class="bi bi-stop-fill me-1"></i>Cancel
+            </button>
+        }
+        @* Execution plan for the current query (EXPLAIN / SHOWPLAN). Read-only —
+           the statement is planned, never executed. *@
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                title="Show execution plan (EXPLAIN)"
+                disabled="@(_isRunning || !_editorReady)" @onclick="ExplainQueryAsync">
+            <i class="bi bi-diagram-3"></i>
+        </button>
+        @* Transaction mode: Run wraps the script in an explicit transaction that
+           stays pending until Commit/Rollback. The toggle persists in settings. *@
+        <button type="button" class="btn btn-sm @(_transactionMode ? "btn-warning" : "btn-outline-secondary")"
+                title="@(_transactionMode ? "Transaction mode on — Commit or Rollback after each run" : "Transaction mode off — statements autocommit")"
+                @onclick="ToggleTransactionMode">
+            <i class="bi bi-arrow-left-right me-1"></i>Tx
+        </button>
+        @* Commit/Rollback exist only while a transaction is open. *@
+        @if (TxSession.IsActive)
+        {
+            <button type="button" class="btn btn-sm btn-success" @onclick="CommitTransactionAsync">
+                <i class="bi bi-check-lg me-1"></i>Commit
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-danger" @onclick="RollbackTransactionAsync">
+                <i class="bi bi-arrow-counterclockwise me-1"></i>Rollback
+            </button>
+        }
         <button type="button" class="btn btn-sm btn-primary" disabled="@(_isRunning || !_editorReady)"
                 @onclick="RunButton_Click">
             <i class="bi bi-play-fill me-1"></i>Run
@@ -192,6 +244,98 @@
     </div>
 </dialog>
 
+@* ============ TABLE DATA EDITOR (modal dialog) ============ *@
+@* Editable grid for one table, opened from the sidebar "Data" button. Only
+   rendered for engines that support table editing (SQL Server for now). *@
+<TableDataEditor @ref="_tableEditor" Profile="vm.ActiveProfile" Connector="Connector" />
+
+@* ============ QUERY HISTORY (modal dialog) ============ *@
+@* Rolling log of executed statements, newest first. Clicking a row reloads its
+   SQL into the editor (with a confirm when the editor already has content). *@
+<dialog id="@HistoryDialogId" class="dbm-queries-dialog">
+    <div class="dbm-queries-dialog-body">
+        <div class="d-flex flex-row justify-content-between align-items-center mb-1">
+            <h5 class="mb-0"><i class="bi bi-clock-history me-2"></i>Query history</h5>
+            <button type="button" class="btn-close" aria-label="Close" @onclick="CloseHistoryDialogAsync"></button>
+        </div>
+        <p class="text-body-secondary small mb-3">
+            The last @HistoryStoreLimit statements you ran, on any connection.
+        </p>
+
+        @if (!HistoryStore.IsAvailable)
+        {
+            <div class="alert alert-warning py-2 small mb-2">
+                <i class="bi bi-lock-fill me-1"></i>Unlock the vault to use query history.
+            </div>
+        }
+        else
+        {
+            <div class="d-flex flex-row justify-content-between align-items-center mb-2">
+                <input type="text" class="form-control form-control-sm" placeholder="Filter history..."
+                       @bind="_historySearch" @bind:event="oninput" style="max-width: 20rem;" />
+                @if (_history.Count > 0)
+                {
+                    <button type="button" class="btn btn-sm btn-outline-danger" @onclick="RequestClearHistory">
+                        <i class="bi bi-trash me-1"></i>Clear
+                    </button>
+                }
+            </div>
+
+            @if (_pendingHistoryClear)
+            {
+                <div class="alert alert-danger d-flex flex-row align-items-center gap-2 mb-2 py-2" role="alert">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <span class="flex-grow-1 small">Clear the entire history? This cannot be undone.</span>
+                    <button type="button" class="btn btn-sm btn-danger" @onclick="ConfirmClearHistory">Clear</button>
+                    <button type="button" class="btn btn-sm btn-secondary" @onclick="() => _pendingHistoryClear = false">Cancel</button>
+                </div>
+            }
+
+            @if (_pendingHistoryLoadId is Guid histId)
+            {
+                var histEntry = _history.FirstOrDefault(x => x.Id == histId);
+                <div class="alert alert-danger d-flex flex-row align-items-center gap-2 mb-2 py-2" role="alert">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <span class="flex-grow-1 small">Load this statement? The editor content will be replaced.</span>
+                    <button type="button" class="btn btn-sm btn-danger" @onclick="() => LoadHistoryAsync(histId)">Load</button>
+                    <button type="button" class="btn btn-sm btn-secondary" @onclick="() => _pendingHistoryLoadId = null">Cancel</button>
+                </div>
+            }
+
+            @if (FilteredHistory().ToList() is var histList && histList.Count == 0)
+            {
+                <div class="text-body-secondary small">No history to show.</div>
+            }
+            else
+            {
+                <div class="query-library-list">
+                    @foreach (var h in histList)
+                    {
+                        <div class="query-library-item d-flex flex-row align-items-center gap-2 border-top py-1">
+                            <button type="button" class="btn btn-link p-0 text-start flex-grow-1 history-item-btn"
+                                    title="@HistoryTooltip(h)" @onclick="() => RequestLoadHistoryAsync(h)">
+                                <i class="bi @(h.Succeeded ? "bi-check-circle" : "bi-x-circle-fill") me-1"
+                                   style="color: var(--bs-@(h.Succeeded ? "success" : "danger"));"></i>
+                                <span class="history-item-sql">@FirstLine(h.Sql)</span>
+                            </button>
+                            @if (!string.IsNullOrEmpty(h.EngineKey))
+                            {
+                                <span class="badge text-bg-secondary">@EngineName(h.EngineKey)</span>
+                            }
+                            <span class="history-item-meta">
+                                @h.ElapsedMs ms · @(h.RowCount) row@(h.RowCount == 1 ? "" : "s")
+                            </span>
+                            <span class="history-item-time" title="@h.ExecutedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")">
+                                @h.ExecutedUtc.ToLocalTime().ToString("HH:mm:ss")
+                            </span>
+                        </div>
+                    }
+                </div>
+            }
+        }
+    </div>
+</dialog>
+
 <div class="sql-root">
     @* ============ SIDEBAR: schema browser ============ *@
     @if (!_sidebarCollapsed)
@@ -287,6 +431,16 @@
                                             @onclick="() => RunTop20Async(obj.Name)">
                                         @QuickRowsLabel
                                     </button>
+                                    @* Data editor: only for base tables of engines that support
+                                       writing (SQL Server for now) — views are read-only here. *@
+                                    @if (obj.Kind == SchemaObjectKind.Table && Connector.SupportsTableEditing)
+                                    {
+                                        <button type="button" class="btn btn-sm btn-outline-secondary sql-top-btn"
+                                                title="Edit table data"
+                                                @onclick="() => OpenDataEditorAsync(obj.Name)">
+                                            <i class="bi bi-table"></i>
+                                        </button>
+                                    }
                                 }
                                 else if (obj.Kind is SchemaObjectKind.Procedure)
                                 {
@@ -365,6 +519,16 @@
                the divider drag is re-wired cleanly (see OnAfterRenderAsync). *@
             <div id="@DividerId" @key="@(tab.Id + "-div")" class="sql-divider" title="Drag to resize"></div>
             <div id="@ResultsDivId" @key="@(tab.Id + "-res")" class="sql-results-pane" style="@GetResultsStyle(tab.SplitPct)">
+                @* ---- Open transaction banner: the run's changes are pending. ---- *@
+                @if (TxSession.IsActive)
+                {
+                    <div class="alert alert-warning d-flex flex-row align-items-center gap-2 m-0 rounded-0" role="alert">
+                        <i class="bi bi-arrow-left-right"></i>
+                        <span class="flex-grow-1">Transaction open — nothing is saved until you commit.</span>
+                        <button type="button" class="btn btn-sm btn-success" @onclick="CommitTransactionAsync">Commit</button>
+                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="RollbackTransactionAsync">Rollback</button>
+                    </div>
+                }
                 @* ---- Pending write confirmation: inline alert, not a popup, so
                        it lives where the results will land. ---- *@
                 @if (tab.PendingSql is not null)
@@ -374,6 +538,22 @@
                         <span class="flex-grow-1">This query modifies data or structure. Run it anyway?</span>
                         <button type="button" class="btn btn-sm btn-danger" @onclick="ConfirmWrite_Click">Run</button>
                         <button type="button" class="btn btn-sm btn-secondary" @onclick="CancelWrite_Click">Cancel</button>
+                    </div>
+                }
+                else if (tab.IsRunning)
+                {
+                    @* The run is in flight. The pane shows a spinner, a ticking
+                       elapsed timer (kept alive by the run ticker) and a Cancel
+                       button — so a slow query reads as "working", not "frozen". *@
+                    <div class="sql-running">
+                        <span class="spinner-border text-primary" role="status" aria-hidden="true"></span>
+                        <div class="sql-running-text">
+                            Running query…
+                            <span class="sql-running-elapsed">@(_runWatch.Elapsed.TotalSeconds.ToString("0.0"))s</span>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="CancelRun">
+                            <i class="bi bi-stop-fill me-1"></i>Cancel
+                        </button>
                     </div>
                 }
                 else if (tab.Result is { } result)
@@ -413,6 +593,23 @@
                         @if (result.Error is not null)
                         {
                             @* error text rendered above; body left empty on purpose *@
+                        }
+                        else if (tab.IsExplain)
+                        {
+                            @* Plan output: preformatted text, not a grid — EXPLAIN
+                               rows are wide monospace lines, not tabular data. *@
+                            var plan = ExplainText(result);
+                            <div class="sql-plan">
+                                <div class="sql-plan-label"><i class="bi bi-diagram-3 me-1"></i>Execution plan</div>
+                                @if (plan.Length == 0)
+                                {
+                                    <div class="sql-message">No plan returned.</div>
+                                }
+                                else
+                                {
+                                    <pre class="sql-plan-text">@plan</pre>
+                                }
+                            </div>
                         }
                         else if (result.ResultSets.Count == 0)
                         {
@@ -457,11 +654,27 @@
     private const string SidebarId = "dbm-sql-sidebar";
     private const string SidebarDragId = "dbm-sql-sidebar-drag";
     private const string QueriesDialogId = "dbm-queries-dialog";
+    private const string HistoryDialogId = "dbm-history-dialog";
+
+    /// <summary>How many history rows the dialog pulls and advertises.</summary>
+    private const int HistoryStoreLimit = 500;
 
     // Set by OnEditorReady (JS callback): the Run button and query reads must not
     // fire before Monaco exists — the AMD require() engine download is async.
     private bool _editorReady;
     private bool _isRunning;
+
+    // Interactive transaction mode, mirrored from AppSettings.TransactionMode at
+    // page load and persisted by the header toggle.
+    private bool _transactionMode;
+
+    // Run bookkeeping for the "still working" indicator. The stopwatch drives the
+    // elapsed counter; the ticker re-renders the page ~4x/second while a run is in
+    // flight so the counter advances without any query-progress plumbing. The
+    // CancellationTokenSource is tripped by the Cancel button.
+    private readonly System.Diagnostics.Stopwatch _runWatch = new();
+    private CancellationTokenSource? _runCts;
+    private Task? _runTicker;
 
     // Query tabs (SSMS-style). Each tab's SQL text lives in its own Monaco model
     // (JS side); the per-tab result state lives here.
@@ -481,6 +694,12 @@
         public SqlEditorResult? Result { get; set; }
         public string? PendingSql { get; set; }
 
+        /// <summary>True while this tab's query is executing (spinner + Cancel).</summary>
+        public bool IsRunning { get; set; }
+
+        /// <summary>True when the pane is showing an execution plan (rendered as text, not a grid).</summary>
+        public bool IsExplain { get; set; }
+
         /// <summary>Table detected from the executed SQL — prefills the grid's reload export.</summary>
         public string? SourceTable { get; set; }
     }
@@ -495,6 +714,9 @@
     private bool _showDump;
     private bool _sidebarWired;
 
+    // Table data editor (modal dialog). Opened from a sidebar table's Data button.
+    private TableDataEditor? _tableEditor;
+
     // Saved-query library (modal dialog). The list is pulled from the scoped
     // IQueryStore each time the dialog opens (cheap: a handful of rows, one SELECT).
     private List<SavedQuery> _savedQueries = [];
@@ -505,6 +727,13 @@
     private Guid? _pendingLoadId;
     private Guid? _pendingDeleteId;
     private int _queryImportKey;
+
+    // Query history (modal dialog). Pulled from the scoped IQueryHistoryStore each
+    // time the dialog opens, like the saved-query list.
+    private List<QueryHistoryEntry> _history = [];
+    private string _historySearch = string.Empty;
+    private Guid? _pendingHistoryLoadId;
+    private bool _pendingHistoryClear;
 
     // Sidebar UI state.
     private readonly HashSet<string> _expanded = new(StringComparer.OrdinalIgnoreCase);
@@ -552,6 +781,7 @@
         var profile = SessionVault.GetProfile(ProfileId ?? Guid.Empty)
             ?? SessionVault.Profiles[0];
         _activeProfileId = profile.Id.ToString();
+        _transactionMode = Settings.Current.TransactionMode;
 
         // First query tab. Its Monaco model is created in dbSqlEditor.init
         // (seeded from the profile draft), so the id must exist before init runs.
@@ -670,6 +900,15 @@
         if (profile is null)
             return;
 
+        // A pending transaction belongs to the previous connection — roll it back
+        // before the switch so it never silently follows to the new connection.
+        await TxSession.ResetAsync();
+
+        // The data editor is bound to the previous connection; close it so its
+        // grid can never be applied against the new (possibly different) engine.
+        if (_tableEditor is not null)
+            await _tableEditor.CloseAsync();
+
         _activeProfileId = id.ToString();
         // Shared connection: the previous connection's results no longer apply,
         // so clear them on every tab — the tab TEXT is kept (tabs persist across
@@ -718,6 +957,13 @@
             return;
         if (db == profile.SelectedDatabase)
             return;
+
+        // Retargeting the connection invalidates any pending transaction on it.
+        await TxSession.ResetAsync();
+
+        // The open data editor's grid belongs to the previous database.
+        if (_tableEditor is not null)
+            await _tableEditor.CloseAsync();
 
         profile.SelectedDatabase = db;
         // The connection string is the ONLY thing execution reads — rebuilding
@@ -831,6 +1077,16 @@
     }
 
     /// <summary>
+    /// Sidebar Data button: opens the editable data grid for a table. Guarded by
+    /// the connector capability; the grid itself handles a missing primary key.
+    /// </summary>
+    private async Task OpenDataEditorAsync(string objectName)
+    {
+        if (_tableEditor is not null)
+            await _tableEditor.OpenAsync(objectName);
+    }
+
+    /// <summary>
     /// Results-grid "truncate + insert" export: opens the generated reload
     /// script in a NEW tab. Never executed — the user reviews and runs it.
     /// </summary>
@@ -897,34 +1153,195 @@
         StateHasChanged();
     }
 
-    private async Task DoExecuteAsync(string sql)
+    /// <summary>
+    /// Runs a selected/whole script against the active profile (write-gated
+    /// upstream). In transaction mode the script runs inside an explicit
+    /// transaction that stays pending for Commit/Rollback instead of autocommitting.
+    /// </summary>
+    private Task DoExecuteAsync(string sql)
+    {
+        if (_transactionMode && vm.ActiveProfile is { } profile)
+            return RunCoreAsync(sql, explain: false, ct => TxSession.BeginAndExecuteAsync(profile, sql, ct));
+        return RunCoreAsync(sql, explain: false, ct => vm.ExecuteAsync(sql, ct));
+    }
+
+    /// <summary>Header toggle: flips and persists transaction mode.</summary>
+    private void ToggleTransactionMode()
+    {
+        _transactionMode = !_transactionMode;
+        var settings = Settings.Current;
+        settings.TransactionMode = _transactionMode;
+        try
+        {
+            Settings.Save(settings);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Could not save settings", ex.Message, ToastKind.Danger);
+        }
+    }
+
+    private async Task CommitTransactionAsync()
+    {
+        var result = await TxSession.CommitAsync();
+        if (result.Error is not null)
+            Toasts.Show("Commit failed", result.Error, ToastKind.Danger, 8);
+        else
+            Toasts.Show("Committed", "Transaction committed.", ToastKind.Success);
+        StateHasChanged();
+    }
+
+    private async Task RollbackTransactionAsync()
+    {
+        var result = await TxSession.RollbackAsync();
+        if (result.Error is not null)
+            Toasts.Show("Rollback failed", result.Error, ToastKind.Danger, 8);
+        else
+            Toasts.Show("Rolled back", "Transaction rolled back.", ToastKind.Success);
+        StateHasChanged();
+    }
+
+    /// <summary>Renders the execution plan of the script (read-only).</summary>
+    private Task DoExplainAsync(string sql) => RunCoreAsync(sql, explain: true, ct => vm.ExplainAsync(sql, ct));
+
+    /// <summary>
+    /// Shared execution path for Run and Explain: drives the live "running"
+    /// indicator (spinner + ticking elapsed + Cancel) and lands the result on the
+    /// tab the request started from. <paramref name="run"/> is the actual call so
+    /// the two entry points share all the bookkeeping.
+    /// </summary>
+    private async Task RunCoreAsync(string sql, bool explain, Func<CancellationToken, Task<SqlEditorResult>> run)
     {
         // Capture the tab up front: the user may switch tabs while the query
         // runs, and the result must land on the tab it was launched from.
         var tab = ActiveTab;
         _isRunning = true;
         tab.PendingSql = null;
-        tab.SourceTable = SqlTableExtractor.Extract(sql);
+        tab.IsExplain = explain;
+        // Source-table detection only feeds the reload export, which a plan has none of.
+        tab.SourceTable = explain ? null : SqlTableExtractor.Extract(sql);
+        // Show the pane immediately so the running indicator is visible from the
+        // first millisecond of a long query, not only once results land.
+        tab.Result = null;
+        tab.IsRunning = true;
+        tab.HasRun = true;
+        tab.ActiveResultTab = 0;
         StateHasChanged();
+
+        var cts = new CancellationTokenSource();
+        _runCts = cts;
+        _runWatch.Restart();
+        _runTicker = RunTickerAsync(cts.Token);
+
         try
         {
-            var result = await vm.ExecuteAsync(sql);
+            var result = await run(cts.Token);
             tab.Result = result;
-            tab.HasRun = true;
             tab.ActiveResultTab = 0;
 
-            if (result.Error is not null)
+            // Record the run (not plans; not user-cancelled runs) in the history.
+            if (!explain && !result.Cancelled)
+                RecordHistory(sql, result);
+
+            // A user-initiated stop is not a failure — the pane already says
+            // "cancelled"; skip the error toast for it.
+            if (result.Error is not null && !result.Cancelled)
                 ShowErrorToast(result.Error);
         }
         finally
         {
+            // Order matters: stop the ticker before disposing its CTS, so the
+            // Task.Delay inside it unblocks through the same token it was given.
+            cts.Cancel();
+            _runWatch.Stop();
+            if (_runTicker is not null)
+            {
+                try { await _runTicker; } catch { /* ticker swallows its own cancel */ }
+                _runTicker = null;
+            }
+            _runCts = null;
+            cts.Dispose();
+
+            tab.IsRunning = false;
             _isRunning = false;
             StateHasChanged();
         }
     }
 
+    /// <summary>
+    /// Header button: plans the current editor content without running it. Reads
+    /// the selection or the whole document exactly like Run, but skips the write
+    /// gate (nothing is executed).
+    /// </summary>
+    private async Task ExplainQueryAsync()
+    {
+        if (!_editorReady || _isRunning)
+            return;
+
+        var sql = Settings.Current.ExecuteSelectionOnly
+            ? await JS.InvokeAsync<string>("dbSqlEditor.getSelection", EditorDivId)
+            : string.Empty;
+
+        if (string.IsNullOrWhiteSpace(sql))
+            sql = await JS.InvokeAsync<string>("dbSqlEditor.getValue", EditorDivId);
+
+        if (string.IsNullOrWhiteSpace(sql))
+            return;
+
+        await DoExplainAsync(sql);
+    }
+
+    /// <summary>Trips the run's CancellationTokenSource so the provider aborts the command.</summary>
+    private void CancelRun()
+    {
+        try { _runCts?.Cancel(); }
+        catch (ObjectDisposedException) { /* run finished between click and handler */ }
+    }
+
+    /// <summary>
+    /// Re-renders the page every 250 ms while the run's token is live, so the
+    /// elapsed counter on the running indicator keeps ticking. The loop exits
+    /// through the token; the delay is deliberately not awaited after cancellation.
+    /// </summary>
+    private async Task RunTickerAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(250, ct);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { /* normal stop */ }
+    }
+
     private void ShowErrorToast(string message) =>
         Toasts.Show("SQL error", message, ToastKind.Danger, 8);
+
+    /// <summary>
+    /// Flattens a plan result into display text: every row of every result set,
+    /// column values joined by " | ". EXPLAIN output is one wide text column per
+    /// engine, so a grid would waste the horizontal space and hide the indentation.
+    /// </summary>
+    private static string ExplainText(SqlEditorResult result)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var table in result.ResultSets)
+        {
+            foreach (DataRow row in table.Rows)
+            {
+                for (var i = 0; i < table.Columns.Count; i++)
+                {
+                    if (i > 0)
+                        sb.Append("  |  ");
+                    sb.Append(row[i] is DBNull or null ? "NULL" : row[i].ToString());
+                }
+                sb.Append('\n');
+            }
+        }
+        return sb.ToString();
+    }
 
     private Task InsertAtCursor(string text) =>
         JS.InvokeVoidAsync("dbSqlEditor.insertAtCursor", EditorDivId, text).AsTask();
@@ -1244,6 +1661,138 @@
         var invalid = Path.GetInvalidFileNameChars();
         var cleaned = new string(name.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
         return cleaned.Length == 0 ? "query" : cleaned;
+    }
+
+    // ---------------- Query history ----------------
+
+    /// <summary>
+    /// Appends one executed statement to the history store. Best-effort: the store
+    /// never throws, and a locked vault simply means the run is not recorded.
+    /// </summary>
+    private void RecordHistory(string sql, SqlEditorResult result)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+            return;
+
+        var profile = vm.ActiveProfile;
+        HistoryStore.Add(new QueryHistoryEntry
+        {
+            Sql = sql,
+            ProfileId = profile?.Id,
+            ProfileName = profile?.Name ?? string.Empty,
+            EngineKey = profile?.EngineKey ?? string.Empty,
+            ElapsedMs = result.ElapsedMs,
+            // Prefer the first result set's row count; a DML batch reports rows affected.
+            RowCount = result.ResultSets.Count > 0 ? result.ResultSets[0].Rows.Count : result.RowsAffected,
+            Succeeded = result.Error is null,
+            Error = result.Error
+        });
+    }
+
+    private async Task OpenHistoryDialogAsync()
+    {
+        ReloadHistory();
+        await JS.InvokeVoidAsync("dbmSite.openDialog", HistoryDialogId);
+    }
+
+    private async Task CloseHistoryDialogAsync() =>
+        await JS.InvokeVoidAsync("dbmSite.closeDialog", HistoryDialogId);
+
+    /// <summary>Reads the history into component state. Never throws (never-throw UI contract).</summary>
+    private void ReloadHistory()
+    {
+        _pendingHistoryLoadId = null;
+        _pendingHistoryClear = false;
+        if (!HistoryStore.IsAvailable)
+        {
+            _history = [];
+            return;
+        }
+        try
+        {
+            _history = HistoryStore.GetRecent(HistoryStoreLimit);
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Query history", ex.Message, ToastKind.Danger);
+            _history = [];
+        }
+    }
+
+    /// <summary>Live filter: SQL text OR connection name OR engine contains the term.</summary>
+    private IEnumerable<QueryHistoryEntry> FilteredHistory()
+    {
+        if (string.IsNullOrWhiteSpace(_historySearch))
+            return _history;
+
+        var term = _historySearch.Trim();
+        return _history.Where(h =>
+            h.Sql.Contains(term, StringComparison.OrdinalIgnoreCase)
+            || h.ProfileName.Contains(term, StringComparison.OrdinalIgnoreCase)
+            || h.EngineKey.Contains(term, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>First non-empty line of a statement, for the one-line history row.</summary>
+    private static string FirstLine(string sql)
+    {
+        foreach (var line in sql.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Length > 0)
+                return trimmed;
+        }
+        return sql.Trim();
+    }
+
+    /// <summary>Hover text: connection + time + the full statement (or the error).</summary>
+    private static string HistoryTooltip(QueryHistoryEntry entry)
+    {
+        var text = $"{entry.ProfileName}\n{entry.ExecutedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}\n\n{entry.Sql}";
+        return entry.Error is null ? text : $"{text}\n\nError: {entry.Error}";
+    }
+
+    /// <summary>History click: overwrite the editor, but confirm when it already has content.</summary>
+    private async Task RequestLoadHistoryAsync(QueryHistoryEntry entry)
+    {
+        var current = _editorReady ? await JS.InvokeAsync<string>("dbSqlEditor.getValue", EditorDivId) : string.Empty;
+        if (string.IsNullOrWhiteSpace(current) || current.StartsWith("-- Write a query", StringComparison.Ordinal))
+        {
+            await LoadHistoryAsync(entry.Id);
+            return;
+        }
+        _pendingHistoryLoadId = entry.Id;
+    }
+
+    private async Task LoadHistoryAsync(Guid id)
+    {
+        var entry = _history.FirstOrDefault(x => x.Id == id);
+        if (entry is null)
+            return;
+        await JS.InvokeVoidAsync("dbSqlEditor.setValue", EditorDivId, entry.Sql);
+        _pendingHistoryLoadId = null;
+        await JS.InvokeVoidAsync("dbmSite.closeDialog", HistoryDialogId);
+        Toasts.Show("Loaded", "Statement loaded from history.", ToastKind.Success);
+    }
+
+    private void RequestClearHistory()
+    {
+        _pendingHistoryClear = true;
+        _pendingHistoryLoadId = null;
+    }
+
+    private void ConfirmClearHistory()
+    {
+        try
+        {
+            HistoryStore.Clear();
+        }
+        catch (Exception ex)
+        {
+            Toasts.Show("Clear failed", ex.Message, ToastKind.Danger);
+            return;
+        }
+        _pendingHistoryClear = false;
+        ReloadHistory();
     }
 
     public void Dispose()

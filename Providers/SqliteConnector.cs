@@ -102,6 +102,16 @@ namespace DbManager.Providers
         /// <summary>SQLite has no functions; stub kept for interface symmetry.</summary>
         public string BuildFunctionStub(string qualifiedName) => QuoteIdentifier(qualifiedName);
 
+        /// <summary>EXPLAIN QUERY PLAN lists the access paths SQLite will use.</summary>
+        public IReadOnlyList<string> BuildExplainCommands(string sql) => ["EXPLAIN QUERY PLAN " + sql];
+
+        /// <summary>Data editor is MSSQL-only for now (catalog query not yet verified live).</summary>
+        public bool SupportsTableEditing => false;
+
+        /// <inheritdoc />
+        public Task<List<TableColumnInfo>> GetTableColumnsAsync(DbConnection conn, string qualifiedName, CancellationToken ct = default) =>
+            Task.FromResult(new List<TableColumnInfo>());
+
         public string FormatSqlLiteral(object? value) =>
             ConnectorHelpers.FormatSqlLiteral(value, hexLiteral: false, nativeBool: false, unicodePrefix: false);
 

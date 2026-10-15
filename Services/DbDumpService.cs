@@ -10,6 +10,7 @@ using DbManager.Abstractions;
 using DbManager.Models;
 using DbManager.Services.Dumping;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace DbManager.Services
 {
@@ -32,13 +33,15 @@ namespace DbManager.Services
         private readonly IDbConnectorRegistry _registry;
         private readonly IReadOnlyDictionary<string, IDbDumper> _dumpers;
         private readonly int _commandTimeout;
+        private readonly ILogger<DbDumpService> _logger;
 
-        public DbDumpService(IDbConnectorRegistry registry, IEnumerable<IDbDumper> dumpers, IConfiguration configuration)
+        public DbDumpService(IDbConnectorRegistry registry, IEnumerable<IDbDumper> dumpers, IConfiguration configuration, ILogger<DbDumpService> logger)
         {
             _registry = registry;
             _dumpers = dumpers.ToDictionary(d => d.EngineKey, StringComparer.OrdinalIgnoreCase);
             // 0 = infinite: dumps/imports routinely exceed the editor's 60 s.
             _commandTimeout = configuration.GetValue("SqlEditor:DumpCommandTimeoutSeconds", 0);
+            _logger = logger;
         }
 
         /// <inheritdoc />
@@ -75,11 +78,13 @@ namespace DbManager.Services
             }
             catch (Exception ex) when (ex is DbException or InvalidOperationException)
             {
+                _logger.LogError(ex, "Dump failed on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 TryDelete(tempPath);
                 result.Error = ex.Message;
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Dump failed (unexpected) on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 TryDelete(tempPath);
                 result.Error = $"{ex.GetType().Name}: {ex.Message}";
             }
@@ -103,10 +108,12 @@ namespace DbManager.Services
             }
             catch (Exception ex) when (ex is DbException or InvalidOperationException or IOException)
             {
+                _logger.LogError(ex, "Import preview failed on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 preview.Error = ex.Message;
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Import preview failed (unexpected) on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 preview.Error = $"{ex.GetType().Name}: {ex.Message}";
             }
             return preview;
@@ -163,6 +170,7 @@ namespace DbManager.Services
                     }
                     catch (Exception ex) when (ex is DbException or InvalidOperationException)
                     {
+                        _logger.LogError(ex, "Import statement #{Index} failed on {Engine} profile '{Profile}'.", index, profile.EngineKey, profile.Name);
                         result.Error = ex.Message;
                         result.FailedStatementPreview = statement.Length <= 300 ? statement : statement[..300] + "…";
                         result.FailedStatementIndex = index;
@@ -182,10 +190,14 @@ namespace DbManager.Services
             }
             catch (Exception ex) when (ex is DbException or InvalidOperationException or IOException)
             {
+                // result.Error may already be set by the per-statement catch above;
+                // still log the aborting exception (rollback/commit/IO).
+                _logger.LogError(ex, "Import aborted on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 result.Error ??= ex.Message;
             }
             catch (Exception ex)
             {
+                _logger.LogError(ex, "Import aborted (unexpected) on {Engine} profile '{Profile}'.", profile.EngineKey, profile.Name);
                 result.Error ??= $"{ex.GetType().Name}: {ex.Message}";
             }
 

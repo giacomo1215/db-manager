@@ -30,6 +30,13 @@ namespace DbManager.Abstractions
         Task<SqlEditorResult> ExecuteAsync(ConnectionProfile profile, string sql, CancellationToken ct = default);
 
         /// <summary>
+        /// Renders the execution plan for <paramref name="sql"/> via the engine's
+        /// dialect (EXPLAIN / SHOWPLAN). Read-only: the statement is planned, not
+        /// executed. Same never-throw contract as <see cref="ExecuteAsync"/>.
+        /// </summary>
+        Task<SqlEditorResult> ExplainAsync(ConnectionProfile profile, string sql, CancellationToken ct = default);
+
+        /// <summary>
         /// Heuristic: does the script mutate data or structure? Only decides whether
         /// the confirm dialog appears; execution is identical either way.
         /// </summary>

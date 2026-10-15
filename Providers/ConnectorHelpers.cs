@@ -112,8 +112,15 @@ namespace DbManager.Providers
         /// TRUE/FALSE (PostgreSQL) instead of the portable 1/0 that every other
         /// engine accepts for a boolean column. <paramref name="unicodePrefix"/>
         /// prefixes string literals with N (T-SQL) so non-ASCII text survives.
+        /// <paramref name="backslashEscapes"/> doubles backslashes before the quote
+        /// doubling, for engines where "\" is itself an escape character (MySQL and
+        /// MariaDB, whose default sql_mode does not set NO_BACKSLASH_ESCAPES). Without
+        /// it a value ending in "\" swallows the closing quote and the literal is
+        /// broken — and a crafted value becomes an injection. Off for T-SQL, SQLite
+        /// and PostgreSQL (standard_conforming_strings on): there "\" is literal and
+        /// doubling it would corrupt the value.
         /// </summary>
-        public static string FormatSqlLiteral(object? value, bool hexLiteral, bool nativeBool, bool unicodePrefix)
+        public static string FormatSqlLiteral(object? value, bool hexLiteral, bool nativeBool, bool unicodePrefix, bool backslashEscapes = false)
         {
             switch (value)
             {
@@ -139,9 +146,14 @@ namespace DbManager.Providers
                 case Guid g:
                     return "'" + g.ToString() + "'";
                 default:
-                    // Doubling the quote is the portable escape for every engine here.
+                    // Doubling the quote is the portable escape for every engine here;
+                    // backslashes are doubled first (before quotes are added) only for
+                    // the engines that treat "\" as an escape.
+                    var text = value.ToString() ?? string.Empty;
+                    if (backslashEscapes)
+                        text = text.Replace("\\", "\\\\");
                     var prefix = unicodePrefix ? "N" : "";
-                    return prefix + "'" + (value.ToString() ?? string.Empty).Replace("'", "''") + "'";
+                    return prefix + "'" + text.Replace("'", "''") + "'";
             }
         }
 

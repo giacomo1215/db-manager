@@ -1,0 +1,183 @@
+/*
+ * Scoped styles for the table data editor dialog. The dialog is a wide modal
+ * surface; the grid scrolls inside it (both axes) so a table with many columns
+ * and rows never overflows the viewport.
+ */
+
+.dbm-data-dialog {
+    width: min(92vw, 1100px);
+    max-width: 92vw;
+    max-height: 86vh;
+    padding: 0;
+    border: 1px solid var(--dbm-border);
+    border-radius: 14px;
+    background-color: var(--dbm-panel-solid);
+    color: var(--bs-body-color);
+    overflow: hidden;
+}
+
+.dbm-data-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.45);
+    -webkit-backdrop-filter: blur(2px);
+    backdrop-filter: blur(2px);
+}
+
+/* Column layout: fixed header + footer, the middle scroll area takes the rest. */
+.dbm-data-dialog-body {
+    display: flex;
+    flex-direction: column;
+    max-height: 86vh;
+    min-height: 12rem;
+}
+
+.dbm-data-head {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--dbm-border);
+    flex: 0 0 auto;
+}
+
+.dbm-data-head h5 {
+    font-size: 1rem;
+    max-width: 30rem;
+}
+
+.dbm-data-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 0 0.5rem;
+}
+
+.dbm-data-loading,
+.dbm-data-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2.5rem 1rem;
+    color: var(--dbm-text-dim);
+    font-size: 0.9rem;
+}
+
+.dbm-data-grid {
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.8rem;
+    font-family: var(--bs-font-monospace);
+}
+
+/* Sticky header so column names + PK/ID badges stay visible while scrolling. */
+.dbm-data-grid thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background-color: var(--dbm-panel-solid);
+    border-bottom: 1px solid var(--dbm-border-strong);
+    border-right: 1px solid var(--dbm-border);
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    white-space: nowrap;
+    vertical-align: bottom;
+}
+
+.dbm-data-colname {
+    font-weight: 700;
+}
+
+.dbm-data-coltype {
+    font-size: 0.68rem;
+    color: var(--dbm-text-dim);
+    font-weight: 400;
+}
+
+.dbm-data-grid td {
+    border-bottom: 1px solid var(--dbm-border);
+    border-right: 1px solid var(--dbm-border);
+    padding: 0;
+    vertical-align: middle;
+}
+
+.dbm-data-grid th.dbm-data-pk,
+.dbm-data-grid td.dbm-data-pk {
+    background-color: rgba(var(--bs-primary-rgb), 0.06);
+}
+
+/* Corner cell + per-row action column. */
+.dbm-data-grid th.dbm-data-rowmark,
+.dbm-data-grid td.dbm-data-rowmark {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    width: 2rem;
+    text-align: center;
+    background-color: var(--dbm-panel-solid);
+}
+
+.dbm-data-grid th.dbm-data-rowmark {
+    z-index: 3;
+}
+
+.dbm-data-remove {
+    background: none;
+    border: none;
+    padding: 2px 6px;
+    color: var(--dbm-text-dim);
+    line-height: 1;
+}
+
+.dbm-data-remove:hover {
+    color: var(--bs-danger);
+}
+
+/* Editable cell input: borderless, fills the cell so the grid reads as a table. */
+.dbm-data-input {
+    width: 100%;
+    min-width: 7rem;
+    border: none;
+    background: transparent;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.8rem;
+    font-family: var(--bs-font-monospace);
+    color: var(--bs-body-color);
+}
+
+.dbm-data-input:focus {
+    outline: 2px solid var(--dbm-accent-bright);
+    outline-offset: -2px;
+    background-color: var(--dbm-glass-strong);
+}
+
+.dbm-data-input:disabled {
+    color: var(--dbm-text-dim);
+    background-color: var(--dbm-glass);
+}
+
+.dbm-data-auto {
+    display: inline-block;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.72rem;
+    font-style: italic;
+    color: var(--dbm-text-dim);
+}
+
+/* New rows: a green left edge; rows marked for deletion: struck through and dimmed. */
+.dbm-data-grid tr.dbm-data-new td {
+    box-shadow: inset 3px 0 0 var(--bs-success);
+}
+
+.dbm-data-grid tr.dbm-data-deleted td {
+    opacity: 0.55;
+    text-decoration: line-through;
+}
+
+.dbm-data-foot {
+    flex: 0 0 auto;
+    padding: 0.4rem 1rem;
+    border-top: 1px solid var(--dbm-border);
+    font-size: 0.72rem;
+    color: var(--dbm-text-dim);
+    background-color: var(--dbm-panel-solid);
+}

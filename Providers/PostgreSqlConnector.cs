@@ -190,6 +190,16 @@ namespace DbManager.Providers
 
         public string BuildFunctionStub(string qualifiedName) => $"SELECT {QuoteQualifiedName(qualifiedName)}(";
 
+        /// <summary>EXPLAIN with the default (text) format; the statement is planned, not run.</summary>
+        public IReadOnlyList<string> BuildExplainCommands(string sql) => ["EXPLAIN " + sql];
+
+        /// <summary>Data editor is MSSQL-only for now (catalog query not yet verified live).</summary>
+        public bool SupportsTableEditing => false;
+
+        /// <inheritdoc />
+        public Task<List<TableColumnInfo>> GetTableColumnsAsync(DbConnection conn, string qualifiedName, CancellationToken ct = default) =>
+            Task.FromResult(new List<TableColumnInfo>());
+
         public string FormatSqlLiteral(object? value) =>
             ConnectorHelpers.FormatSqlLiteral(value, hexLiteral: false, nativeBool: true, unicodePrefix: false);
 

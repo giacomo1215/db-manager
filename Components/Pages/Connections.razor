@@ -138,6 +138,23 @@
                                 <input type="password" class="form-control" @bind="_form.Password" />
                             </div>
                         </div>
+
+                        @if (_form.EngineKey == "mssql")
+                        {
+                            <div class="mb-2">
+                                <label class="form-label">Encryption</label>
+                                <select class="form-select" @bind="_form.EncryptMode">
+                                    <option value="@SqlServerEncryption.TrustServerCertificate">On — trust self-signed certificate (default)</option>
+                                    <option value="@SqlServerEncryption.VerifyCertificate">On — verify certificate chain</option>
+                                    <option value="@SqlServerEncryption.Strict">Strict (TDS 8.0)</option>
+                                    <option value="@SqlServerEncryption.Off">Off — no TLS (legacy servers)</option>
+                                </select>
+                                <div class="form-text">
+                                    Pick "Off" when an old server rejects the TLS handshake; pick "verify"/"Strict" when the
+                                    server requires a validated certificate.
+                                </div>
+                            </div>
+                        }
                     }
 
                     @if (!_form.UseRaw && SelectedConnector?.SupportsServerLevel == true)
@@ -448,6 +465,7 @@
             profile.Username = string.Empty;
             profile.Password = string.Empty;
             profile.SelectedDatabase = string.Empty;
+            profile.EncryptMode = SqlServerEncryption.Default;
             return;
         }
 
@@ -457,6 +475,7 @@
         profile.Username = _form.Username;
         profile.Password = _form.Password;
         profile.SelectedDatabase = _form.Database;
+        profile.EncryptMode = _form.EncryptMode;
     }
 
     private void DeleteProfile(ConnectionProfile profile)
