@@ -110,6 +110,8 @@ secrets.json
 # db-manager encrypted connection vault lives here by default (~/.db-manager/)
 vault.json
 connections.json
+# App_Data: local runtime data (vault, query store, rolling logs) — never commit
+App_Data/
 *.db-shm
 *.db-wal
 *.sqlite
