@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
     <!-- Single source of truth for the app version shown in the navbar. -->
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
   </PropertyGroup>
 
   <!-- Two releases from one codebase: DbManagerMode=Desktop (Photino window,
@@ -29,6 +29,10 @@
     <PackageReference Include="MySqlConnector" Version="2.6.2" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Photino.NET" Version="4.0.16" />
+    <!-- Transitive via Microsoft.Data.SqlClient 6.1.7, which pins the vulnerable
+         9.0.11. Referenced directly to lift it to the patched build and clear
+         NU1902/NU1903 (GHSA-2fmv-rv2c-59x7, GHSA-846f-f764-76mx). -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="9.0.21" />
   </ItemGroup>
 
   <!-- Desktop release: embed every static asset into the assembly. A single-

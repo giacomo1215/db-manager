@@ -32,3 +32,14 @@
 .page ::deep .navbar .nav-link.active {
     color: var(--dbm-text);
 }
+
+/* Version marker: deliberately quiet — there for support, never competing with
+   the brand. Dim text, no chrome, no pill. */
+.page ::deep .navbar-brand .dbm-version {
+    color: var(--dbm-text-dim);
+    font-size: .68rem;
+    font-weight: 400;
+    letter-spacing: .02em;
+    margin-left: .35rem;
+    opacity: .5;
+}
